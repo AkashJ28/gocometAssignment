@@ -1,0 +1,57 @@
+customer_id: "CUST-001"
+customer_name: "Meridian Robotics"
+
+consignee:
+  primary_name: "Meridian Robotics Inc."
+  aliases:
+    - "Meridian Robotics LLC"
+    - "Meridian Robotics Corp"
+    - "Meridian Robotics Incorporated"
+  address_keywords:
+    - "Suite 400"
+    - "Silicon Valley"
+    - "California"
+  min_fuzzy_threshold: 0.85
+
+allowed_hs_codes:
+  - code: "8479.50"
+    description: "Industrial robots for multiple uses"
+  - code: "8479.89"
+    description: "Other machines and mechanical appliances having individual functions"
+
+allowed_incoterms:
+  - "FOB"
+  - "CIF"
+  - "DAP"
+
+ports:
+  pol:
+    allowed_locodes:
+      - "CNSHA"
+      - "CNNBO"
+      - "SGSIN"
+      - "JPTYO"
+      - "JPYOK"
+    allowed_names:
+      - "Shanghai"
+      - "Ningbo"
+      - "Singapore"
+      - "Tokyo"
+      - "Yokohama"
+  pod:
+    allowed_locodes:
+      - "USLAX"
+      - "USLGB"
+      - "USOAK"
+    allowed_names:
+      - "Los Angeles"
+      - "Long Beach"
+      - "Oakland"
+
+weight_tolerance:
+  unit: "KG"
+  variance_percent: 5.0
+  max_limit_kg: 50000.0
+
+validation_thresholds:
+  min_confidence_auto_approve: 0.85

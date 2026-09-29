@@ -1,0 +1,85 @@
+# Python & Virtual Environments
+.venv/
+venv/
+env/
+ENV/
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# Node & Frontend
+node_modules/
+frontend/node_modules/
+dist/
+frontend/dist/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Environment & Secrets
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+
+# Runtime Storage & Uploads
+uploads/
+evals/dataset/
+*.db
+*.sqlite
+*.sqlite3
+*.log
+
+# Operating System & Editors
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Temporary & Scratch Dirs
+scratch/
+tmp/
+temp/
+.cache/
+
+# Documentation & Internal Design Decisions
+docs/
+TECH_STACK_DECISIONS.md
+
+# AI Coding Assistants & Planning Frameworks
+GEMINI.md
+CLAUDE.md
+AGENTS.md
+.planning/
+.gemini/
+.agy/
+.antigravity/
+.claude/
+.cursor/
+.cursorrules
+.windsurf/
+.codeium/
+.copilot/
+.codebuddy/
+.cline/
+.agents/
+.ai/
+AI-SPEC.md
+UI-SPEC.md
+*-PLAN.md
+*-SUMMARY.md
+*-VERIFICATION.md
+*-REVIEW.md
+*-UAT.md
+*-CONTEXT.md
+*-RESEARCH.md
+*-SPEC.md

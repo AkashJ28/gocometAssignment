@@ -1,0 +1,223 @@
+{
+  "version": "1.0",
+  "description": "GoComet Nova DAW Evaluation Ground Truth (Part 1)",
+  "document_count": 12,
+  "documents": [
+    {
+      "document_id": "doc_01",
+      "filename": "doc_01_clean_invoice_meridian_tokyo.pdf",
+      "category": "clean",
+      "expected_fields": {
+        "invoice_number": "INV-2026-9001",
+        "consignee": "Meridian Robotics Inc.",
+        "hs_code": "8479.50.00",
+        "pol": "Port of Tokyo (JPTYO)",
+        "pod": "Port of Los Angeles (USLAX)",
+        "incoterm": "FOB",
+        "gross_weight": "12,500.00 KG",
+        "description": "Industrial Robotic Arms model MR-400 with Servo Controllers"
+      },
+      "expected_validation": "match",
+      "expected_decision": "auto_approve",
+      "discrepancy_notes": "Clean commercial invoice perfectly matching all customer baseline rules."
+    },
+    {
+      "document_id": "doc_02",
+      "filename": "doc_02_clean_bol_meridian_yokohama.pdf",
+      "category": "clean",
+      "expected_fields": {
+        "invoice_number": "BL-2026-8812",
+        "consignee": "Meridian Robotics Inc.",
+        "hs_code": "8479.50.10",
+        "pol": "Yokohama Port (JPYOK)",
+        "pod": "Port of Long Beach (USLGB)",
+        "incoterm": "CIF",
+        "gross_weight": "12,200.00 KG",
+        "description": "Multi-axis Industrial Welding Robots and Articulated Manipulators"
+      },
+      "expected_validation": "match",
+      "expected_decision": "auto_approve",
+      "discrepancy_notes": "Clean ocean bill of lading matching approved consignee, ports, and CIF terms."
+    },
+    {
+      "document_id": "doc_03",
+      "filename": "doc_03_clean_invoice_meridian_usd.pdf",
+      "category": "clean",
+      "expected_fields": {
+        "invoice_number": "INV-2026-9003",
+        "consignee": "Meridian Robotics Inc.",
+        "hs_code": "8479.89.90",
+        "pol": "Shanghai Port (CNSHA)",
+        "pod": "Port of Oakland (USOAK)",
+        "incoterm": "DAP",
+        "gross_weight": "9,800.00 KG",
+        "description": "Automated Robotic Assembly Cells and Modular Feeder Units"
+      },
+      "expected_validation": "match",
+      "expected_decision": "auto_approve",
+      "discrepancy_notes": "Clean commercial invoice with DAP terms and Shanghai to Oakland routing."
+    },
+    {
+      "document_id": "doc_04",
+      "filename": "doc_04_discrepancy_hs_transposition.pdf",
+      "category": "planted_discrepancy",
+      "expected_fields": {
+        "invoice_number": "INV-2026-9004",
+        "consignee": "Meridian Robotics Inc.",
+        "hs_code": "8479.05.00",
+        "pol": "Port of Tokyo (JPTYO)",
+        "pod": "Port of Los Angeles (USLAX)",
+        "incoterm": "FOB",
+        "gross_weight": "12,500.00 KG",
+        "description": "Industrial Robotic Arms model MR-400"
+      },
+      "expected_validation": "mismatch",
+      "expected_decision": "amendment_request",
+      "discrepancy_notes": "Planted tariff classification transposition (8479.05.00 not in approved 8479.50 / 8479.89)."
+    },
+    {
+      "document_id": "doc_05",
+      "filename": "doc_05_discrepancy_consignee_mismatch.pdf",
+      "category": "planted_discrepancy",
+      "expected_fields": {
+        "invoice_number": "INV-2026-9005",
+        "consignee": "Acme Global Industrial Logistics Ltd",
+        "hs_code": "8479.50.00",
+        "pol": "Port of Tokyo (JPTYO)",
+        "pod": "Port of Los Angeles (USLAX)",
+        "incoterm": "FOB",
+        "gross_weight": "12,500.00 KG",
+        "description": "Industrial Robotic Arms model MR-400"
+      },
+      "expected_validation": "mismatch",
+      "expected_decision": "amendment_request",
+      "discrepancy_notes": "Unauthorized third-party consignee Acme Global Industrial Logistics Ltd."
+    },
+    {
+      "document_id": "doc_06",
+      "filename": "doc_06_discrepancy_missing_incoterm.pdf",
+      "category": "planted_discrepancy",
+      "expected_fields": {
+        "invoice_number": "INV-2026-9006",
+        "consignee": "Meridian Robotics Inc.",
+        "hs_code": "8479.50.00",
+        "pol": "Port of Tokyo (JPTYO)",
+        "pod": "Port of Los Angeles (USLAX)",
+        "incoterm": null,
+        "gross_weight": "12,500.00 KG",
+        "description": "Industrial Robotic Arms model MR-400"
+      },
+      "expected_validation": "uncertain",
+      "expected_decision": "human_review",
+      "discrepancy_notes": "Mandatory trade Incoterm omitted from document text; tests zero guessing."
+    },
+    {
+      "document_id": "doc_07",
+      "filename": "doc_07_discrepancy_weight_over_tolerance.pdf",
+      "category": "planted_discrepancy",
+      "expected_fields": {
+        "invoice_number": "INV-2026-9007",
+        "consignee": "Meridian Robotics Inc.",
+        "hs_code": "8479.50.00",
+        "pol": "Yokohama Port (JPYOK)",
+        "pod": "Port of Los Angeles (USLAX)",
+        "incoterm": "CIF",
+        "gross_weight": "58,400.00 KG",
+        "description": "Industrial Heavy Forging Robot Gantry Structure"
+      },
+      "expected_validation": "mismatch",
+      "expected_decision": "amendment_request",
+      "discrepancy_notes": "Gross weight 58,400 KG exceeds customer maximum limit of 50,000 KG."
+    },
+    {
+      "document_id": "doc_08",
+      "filename": "doc_08_discrepancy_disallowed_pol.pdf",
+      "category": "planted_discrepancy",
+      "expected_fields": {
+        "invoice_number": "INV-2026-9008",
+        "consignee": "Meridian Robotics Inc.",
+        "hs_code": "8479.50.00",
+        "pol": "Rotterdam Port (NLRTM)",
+        "pod": "Port of Los Angeles (USLAX)",
+        "incoterm": "FOB",
+        "gross_weight": "12,500.00 KG",
+        "description": "Industrial Robotic Arms model MR-400"
+      },
+      "expected_validation": "mismatch",
+      "expected_decision": "amendment_request",
+      "discrepancy_notes": "Port of Loading NLRTM (Rotterdam) is not in customer approved POL list."
+    },
+    {
+      "document_id": "doc_09",
+      "filename": "doc_09_edge_fuzzy_consignee_pass.pdf",
+      "category": "edge_case",
+      "expected_fields": {
+        "invoice_number": "INV-2026-9009",
+        "consignee": "Meridian Robotics LLC",
+        "hs_code": "8479.50.00",
+        "pol": "Port of Tokyo (JPTYO)",
+        "pod": "Port of Los Angeles (USLAX)",
+        "incoterm": "FOB",
+        "gross_weight": "12,500.00 KG",
+        "description": "Industrial Robotic Arms model MR-400"
+      },
+      "expected_validation": "match",
+      "expected_decision": "auto_approve",
+      "discrepancy_notes": "Approved alias Meridian Robotics LLC correctly matches via fuzzy threshold >= 0.85."
+    },
+    {
+      "document_id": "doc_10",
+      "filename": "doc_10_discrepancy_weight_unit_lbs.pdf",
+      "category": "planted_discrepancy",
+      "expected_fields": {
+        "invoice_number": "BL-2026-9910",
+        "consignee": "Meridian Robotics Inc.",
+        "hs_code": "8479.50.00",
+        "pol": "Port of Tokyo (JPTYO)",
+        "pod": "Port of Los Angeles (USLAX)",
+        "incoterm": "FOB",
+        "gross_weight": "Pending tare re-weigh verification",
+        "description": "Articulated Industrial Robot Manipulators"
+      },
+      "expected_validation": "uncertain",
+      "expected_decision": "human_review",
+      "discrepancy_notes": "Unparseable non-numeric gross weight triggers UNCERTAIN validation status."
+    },
+    {
+      "document_id": "doc_11",
+      "filename": "doc_11_multi_discrepancy_consignee_incoterm.pdf",
+      "category": "planted_discrepancy",
+      "expected_fields": {
+        "invoice_number": "INV-2026-9011",
+        "consignee": "Pacific Rim Cargo Ltd",
+        "hs_code": "8479.50.00",
+        "pol": "Port of Tokyo (JPTYO)",
+        "pod": "Port of Los Angeles (USLAX)",
+        "incoterm": "EXW",
+        "gross_weight": "12,500.00 KG",
+        "description": "Industrial Robotic Arms model MR-400"
+      },
+      "expected_validation": "mismatch",
+      "expected_decision": "amendment_request",
+      "discrepancy_notes": "Compound discrepancies: unauthorized consignee and prohibited Incoterm EXW."
+    },
+    {
+      "document_id": "doc_12",
+      "filename": "doc_12_messy_scanned_noisy_invoice.pdf",
+      "category": "messy",
+      "expected_fields": {
+        "invoice_number": "INV-2026-9012",
+        "consignee": "Meridian Robotics Inc.",
+        "hs_code": "8479.50.00",
+        "pol": "Port of Tokyo (JPTYO)",
+        "pod": "Port of Los Angeles (USLAX)",
+        "incoterm": "FOB",
+        "gross_weight": "12,500.00 KG",
+        "description": "Industrial Robotic Arms model MR-400"
+      },
+      "expected_validation": "match",
+      "expected_decision": "auto_approve",
+      "discrepancy_notes": "Degraded visual styling with simulated scanner artifacts, but completely valid trade values."
+    }
+  ]
+}
