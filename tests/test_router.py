@@ -177,7 +177,7 @@ def test_router_agent_with_mock_client(mismatch_validation_result):
     mock_response = MagicMock()
     mock_response.text = json.dumps({
         "reasoning": "The document displays an unauthorized Incoterm EXW requiring supplier correction.",
-        "amendment_email": "Subject: Please amend Incoterm to FOB.",
+        "amendment_email": "Subject: Please amend Incoterm from EXW to FOB.",
     })
     usage = MagicMock()
     usage.prompt_token_count = 500
@@ -196,12 +196,39 @@ def test_router_agent_with_mock_client(mismatch_validation_result):
 
     assert decision_result.decision == DecisionType.AMENDMENT_REQUEST
     assert "unauthorized Incoterm" in decision_result.reasoning
-    assert decision_result.draft_amendment_email == "Subject: Please amend Incoterm to FOB."
+    assert decision_result.draft_amendment_email == "Subject: Please amend Incoterm from EXW to FOB."
+    assert decision_result.text_source == "llm"
+    assert run_trace.status == "SUCCESS"
 
     assert run_trace.prompt_tokens == 500
     assert run_trace.completion_tokens == 120
     assert run_trace.thinking_tokens == 30
     assert run_trace.cost_usd > 0.0
+
+
+def test_router_agent_llm_verification_failure_fallback(mismatch_validation_result):
+    """When LLM omits discrepancy details, RouterAgent rejects draft and uses template."""
+    mock_client = MagicMock()
+    mock_response = MagicMock()
+    mock_response.text = json.dumps({
+        "reasoning": "Incoterm issue detected.",
+        # Omits found value 'EXW'
+        "amendment_email": "Dear shipper, please fix the trade document.",
+    })
+    mock_response.usage_metadata = MagicMock(prompt_token_count=100, candidates_token_count=50, thoughts_token_count=0)
+    mock_client.models.generate_content.return_value = mock_response
+
+    agent = RouterAgent(client=mock_client, model_name="gemini-2.5-flash-lite")
+    decision_result, run_trace = agent.decide(
+        mismatch_validation_result,
+        document_id="doc-004b",
+        invoice_number="INV-9999",
+    )
+
+    assert decision_result.decision == DecisionType.AMENDMENT_REQUEST
+    assert decision_result.text_source == "template"
+    assert run_trace.status == "DEGRADED"
+    assert "EXW" in decision_result.draft_amendment_email
 
 
 def test_router_agent_api_error_fallback(mismatch_validation_result):
@@ -221,5 +248,6 @@ def test_router_agent_api_error_fallback(mismatch_validation_result):
     assert "compliance discrepancy" in decision_result.reasoning.lower()
     assert decision_result.draft_amendment_email is not None
     assert "Invoice #INV-1234" in decision_result.draft_amendment_email
+    assert decision_result.text_source == "template"
     assert run_trace.error_message == "API connection timeout"
-    assert run_trace.status == "SUCCESS"
+    assert run_trace.status == "DEGRADED"

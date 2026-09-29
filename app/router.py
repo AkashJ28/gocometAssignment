@@ -11,23 +11,24 @@ from google import genai
 from google.genai import types
 from pydantic import BaseModel, ConfigDict
 
+from app.config import (
+    DEFAULT_ROUTER_MODEL,
+    LLM_TIMEOUT_SECONDS,
+    calculate_cost,
+)
 from app.schemas import (
     DecisionResult,
     DecisionType,
     Discrepancy,
+    FieldValidation,
     RunTrace,
     ValidationResult,
     ValidationStatus,
 )
 
-DEFAULT_LITE_MODEL = "gemini-2.5-flash-lite"
-LITE_PROMPT_COST_PER_MILLION = 0.075
-LITE_COMPLETION_COST_PER_MILLION = 0.30
-
 
 class RouterLLMResponse(BaseModel):
     """Schema for structured reasoning and optional amendment email from LLM."""
-    model_config = ConfigDict(extra="forbid")
 
     reasoning: str
     amendment_email: Optional[str] = None
@@ -97,6 +98,7 @@ def generate_fallback_amendment_email(
     invoice_number: Optional[str],
     discrepancies: List[Discrepancy],
     document_id: Optional[str] = None,
+    uncertain_fields: Optional[List[FieldValidation]] = None,
 ) -> str:
     """Generate professional, itemized amendment request email for Shipper / Supplier."""
     inv_ref = invoice_number if invoice_number and invoice_number.strip() else "NOT SPECIFIED"
@@ -117,6 +119,20 @@ def generate_fallback_amendment_email(
     for d in discrepancies:
         email_lines.append(f"| {d.field_name} | {d.found} | {d.expected} | {d.severity.upper()} |")
 
+    if uncertain_fields:
+        email_lines.extend(
+            [
+                "",
+                "Items Requiring Confirmation or Missing Details (Please Confirm or Correct):",
+                "| Field Name | Extracted Value | Reason / Issue |",
+                "|---|---|---|",
+            ]
+        )
+        for uf in uncertain_fields:
+            found_val = uf.found if uf.found is not None else "NOT EXTRACTED"
+            reason = uf.reason if uf.reason else "Uncertain verification"
+            email_lines.append(f"| {uf.field_name} | {found_val} | {reason} |")
+
     email_lines.extend(
         [
             "",
@@ -134,6 +150,35 @@ def generate_fallback_amendment_email(
     return "\n".join(email_lines)
 
 
+def verify_amendment_draft(
+    draft: Optional[str],
+    discrepancies: List[Discrepancy],
+    uncertain_fields: Optional[List[FieldValidation]] = None,
+) -> bool:
+    """Validate that LLM amendment draft includes all discrepancies (field name and found value)
+    and all uncertain fields. If any are omitted, returns False to trigger fallback to template."""
+    if not draft or not draft.strip():
+        return False
+    draft_lower = draft.lower()
+
+    for d in discrepancies:
+        field_tokens = [d.field_name.lower(), d.field_name.replace("_", " ").lower()]
+        if not any(token in draft_lower for token in field_tokens):
+            return False
+        if d.found is not None:
+            found_str = str(d.found).strip().lower()
+            if found_str and found_str not in draft_lower:
+                return False
+
+    if uncertain_fields:
+        for u in uncertain_fields:
+            field_tokens = [u.field_name.lower(), u.field_name.replace("_", " ").lower()]
+            if not any(token in draft_lower for token in field_tokens):
+                return False
+
+    return True
+
+
 class RouterAgent:
     """Policy decision agent with generative rationale and supplier amendment drafting."""
 
@@ -145,8 +190,9 @@ class RouterAgent:
     ):
         self.model_name = (
             model_name
+            or os.environ.get("ROUTER_MODEL")
             or os.environ.get("LITE_MODEL")
-            or DEFAULT_LITE_MODEL
+            or DEFAULT_ROUTER_MODEL
         )
         self.mock_mode = mock_mode
 
@@ -172,6 +218,7 @@ class RouterAgent:
 
         reasoning = ""
         draft_amendment_email: Optional[str] = None
+        text_source = "template"
         prompt_tokens = 0
         completion_tokens = 0
         thinking_tokens = 0
@@ -179,11 +226,20 @@ class RouterAgent:
         status = "SUCCESS"
         error_msg: Optional[str] = None
 
+        uncertain_list = [
+            fv for fv in validation_result.field_validations.values()
+            if fv.status == ValidationStatus.UNCERTAIN
+        ]
+
         if self.mock_mode or self.client is None:
+            text_source = "template"
             reasoning = generate_fallback_reasoning(decision, validation_result)
             if decision == DecisionType.AMENDMENT_REQUEST:
                 draft_amendment_email = generate_fallback_amendment_email(
-                    invoice_number, validation_result.discrepancies, document_id
+                    invoice_number,
+                    validation_result.discrepancies,
+                    document_id=document_id,
+                    uncertain_fields=uncertain_list,
                 )
         else:
             # Build prompt for Gemini
@@ -214,30 +270,52 @@ class RouterAgent:
                         getattr(response.usage_metadata, "thoughts_token_count", 0) or 0
                     )
 
-                cost_usd = (prompt_tokens / 1_000_000 * LITE_PROMPT_COST_PER_MILLION) + (
-                    (completion_tokens + thinking_tokens)
-                    / 1_000_000
-                    * LITE_COMPLETION_COST_PER_MILLION
+                cost_usd = calculate_cost(
+                    self.model_name,
+                    prompt_tokens,
+                    completion_tokens + thinking_tokens,
                 )
 
                 parsed_json = json.loads(response.text)
                 reasoning = parsed_json.get("reasoning", "")
                 if decision == DecisionType.AMENDMENT_REQUEST:
-                    draft_amendment_email = parsed_json.get("amendment_email")
-                    if not draft_amendment_email:
+                    candidate_email = parsed_json.get("amendment_email")
+                    if candidate_email and verify_amendment_draft(
+                        candidate_email,
+                        validation_result.discrepancies,
+                        uncertain_list,
+                    ):
+                        draft_amendment_email = candidate_email
+                        text_source = "llm"
+                    else:
                         draft_amendment_email = generate_fallback_amendment_email(
-                            invoice_number, validation_result.discrepancies, document_id
+                            invoice_number,
+                            validation_result.discrepancies,
+                            document_id=document_id,
+                            uncertain_fields=uncertain_list,
+                        )
+                        text_source = "template"
+                        status = "DEGRADED"
+                        error_msg = (
+                            "LLM amendment draft failed discrepancy/uncertain verification; "
+                            "safely defaulted to deterministic template."
                         )
                 else:
                     draft_amendment_email = None
+                    text_source = "llm"
 
             except Exception as e:
                 error_msg = str(e)
+                status = "DEGRADED"
+                text_source = "template"
                 # Graceful degradation to deterministic template fallback
                 reasoning = generate_fallback_reasoning(decision, validation_result)
                 if decision == DecisionType.AMENDMENT_REQUEST:
                     draft_amendment_email = generate_fallback_amendment_email(
-                        invoice_number, validation_result.discrepancies, document_id
+                        invoice_number,
+                        validation_result.discrepancies,
+                        document_id=document_id,
+                        uncertain_fields=uncertain_list,
                     )
                 else:
                     draft_amendment_email = None
@@ -247,6 +325,7 @@ class RouterAgent:
             decision=decision,
             reasoning=reasoning,
             draft_amendment_email=draft_amendment_email,
+            text_source=text_source,
         )
 
         latency_ms = (time.perf_counter() - t0) * 1000.0
@@ -294,7 +373,7 @@ class RouterAgent:
         document_id: Optional[str],
         invoice_number: Optional[str],
     ) -> str:
-        """Construct prompt for Gemini 3.5 Flash-Lite."""
+        """Construct prompt for Gemini Flash-Lite."""
         discrepancies_data = [d.model_dump() for d in validation_result.discrepancies]
         uncertain_fields = {
             k: v.model_dump()
@@ -313,6 +392,8 @@ A document has completed deterministic rule validation with the following outcom
 
 TASK:
 1. Generate 'reasoning': A clear, professional, concise summary (2-4 sentences) explaining the decision rationale for the Cargo Operations (CG) team.
-2. If decision is 'amendment_request': Generate 'amendment_email': A formal, courteous email draft to the Shipper/Supplier (SU) detailing each specific discrepancy with found vs expected values and instructions to provide an amended invoice.
+2. If decision is 'amendment_request': Generate 'amendment_email': A formal, courteous email draft to the Shipper/Supplier (SU).
+   - It MUST explicitly mention each discrepancy's field name and found value so the supplier knows what was incorrect.
+   - If there are uncertain fields, include a 'Please confirm or correct' section listing each uncertain field and found value to eliminate repeat email cycles.
 3. If decision is NOT 'amendment_request': Set 'amendment_email' to null.
 """

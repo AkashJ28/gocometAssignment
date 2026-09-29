@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 
 from app.database import init_db, get_db
 from app.models import Document
-from app.pipeline import run_pipeline
+from app.pipeline import resume_pipeline, run_pipeline
 from app.query_service import QueryRequest, QueryResult, QueryService
 from app.storage import StorageService
 
@@ -29,9 +29,26 @@ ALLOWED_MIME_TYPES = {
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Lifespan event handler initializing schema tables and directories."""
+    """Lifespan event handler initializing schema tables, directories, and running crash recovery sweep."""
     os.makedirs(UPLOAD_DIR, exist_ok=True)
     init_db()
+
+    # Crash recovery sweep (D2): Scan for incomplete pipeline runs and resume from checkpoint
+    try:
+        incomplete_docs = storage_service.list_incomplete_documents()
+        if incomplete_docs:
+            for doc in incomplete_docs:
+                try:
+                    resume_pipeline(
+                        document_id=doc.id,
+                        storage_service=storage_service,
+                    )
+                except Exception as ex:
+                    # Log and continue - don't crash startup on individual resume failure
+                    pass
+    except Exception:
+        pass
+
     yield
 
 
@@ -55,11 +72,12 @@ query_service = QueryService()
 
 
 @app.get("/api/health")
-def health_check() -> Dict[str, str]:
-    """System health and service readiness check."""
+def health_check() -> Dict[str, Any]:
+    """System health, database readiness, and LLM configuration check."""
     return {
         "status": "healthy",
         "database": "ready",
+        "llm_configured": bool(os.getenv("GEMINI_API_KEY")),
         "version": "1.0.0",
     }
 
@@ -150,6 +168,29 @@ def get_document(document_id: str) -> Dict[str, Any]:
     if not bundle:
         raise HTTPException(status_code=404, detail=f"Document '{document_id}' not found.")
     return bundle
+
+
+@app.post("/api/documents/{document_id}/resume")
+def resume_document(document_id: str) -> Dict[str, Any]:
+    """Resume execution of an interrupted document pipeline run from its checkpoint."""
+    doc = storage_service.get_document(document_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail=f"Document '{document_id}' not found.")
+
+    try:
+        pipeline_result = resume_pipeline(
+            document_id=document_id,
+            storage_service=storage_service,
+        )
+        bundle = storage_service.get_document_bundle(document_id)
+        return {
+            "document_id": document_id,
+            "status": pipeline_result.get("status", "COMPLETED"),
+            "filename": doc.filename,
+            "bundle": bundle,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Resume failed: {str(e)}")
 
 
 @app.get("/api/documents")

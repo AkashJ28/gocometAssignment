@@ -165,8 +165,8 @@ def test_extractor_structured_output_mock_client():
     assert trace.prompt_tokens == 600
     assert trace.completion_tokens == 200
     assert trace.thinking_tokens == 100
-    # Cost = (600 * 0.15 + (200 + 100) * 0.60) / 1M = (90 + 180) / 1M = 0.000270 USD
-    assert abs(trace.cost_usd - 0.000270) < 1e-6
+    # Cost = (600 * 0.75 + (200 + 100) * 3.75) / 1M = (450 + 1125) / 1M = 0.001575 USD
+    assert abs(trace.cost_usd - 0.001575) < 1e-6
 
 
 def test_extractor_error_handling():

@@ -127,15 +127,18 @@ def test_domain_syntax_validation():
 
 
 def test_confidence_calibration():
-    """Verify multi-signal confidence calibrator discounts defective syntax to <= 0.45."""
-    # 1. Grounded + Valid Syntax -> Boosted confidence
-    # 0.75 * 0.90 + 0.25 = 0.925 -> 0.93
+    """Verify multi-signal confidence calibrator preserves raw confidence (strictly non-inflating) and discounts defective syntax to <= 0.45."""
+    # 1. Grounded + Valid Syntax -> Non-inflating preserved confidence
     conf_valid = calibrate_confidence("hs_code", "8479.50", 0.90, is_grounded=True)
     assert conf_valid >= 0.85
-    assert conf_valid == 0.93
+    assert conf_valid == 0.90
+
+    # Raw 0.80 must NOT be inflated to 0.85 (Zero Silent Approval safety)
+    conf_marginal = calibrate_confidence("hs_code", "8479.50", 0.80, is_grounded=True)
+    assert conf_marginal == 0.80
+    assert conf_marginal < 0.85
 
     # 2. Grounded + Defective Syntax -> Discounted to <= 0.45
-    # Malformed HS code 8479.X with raw confidence 0.90 -> min(round(0.90 * 0.5, 2), 0.45) = 0.45
     conf_bad_syntax = calibrate_confidence("hs_code", "8479.X", 0.90, is_grounded=True)
     assert conf_bad_syntax <= 0.45
     assert conf_bad_syntax == 0.45
@@ -148,6 +151,42 @@ def test_confidence_calibration():
     # 3. Ungrounded -> Strictly 0.0
     conf_ungrounded = calibrate_confidence("consignee", "Meridian", 0.99, is_grounded=False)
     assert conf_ungrounded == 0.0
+
+
+def test_value_supported_by_quote():
+    """Verify that hallucinated values riding on real quotes are rejected (Zero Silent Approvals A1)."""
+    from app.grounding import value_supported_by_quote
+
+    # HS code transposition: quote contains 8479.05.00 but value is 8479.50
+    assert (
+        value_supported_by_quote("hs_code", "8479.50", "HS Code: 8479.05.00")
+        is False
+    )
+    assert (
+        value_supported_by_quote("hs_code", "8479.50.00", "HS Code: 8479.50.00")
+        is True
+    )
+
+    # Gross weight: number must be supported
+    assert (
+        value_supported_by_quote("gross_weight", "50,000 KG", "Gross Weight: 12,500 KG")
+        is False
+    )
+    assert (
+        value_supported_by_quote("gross_weight", "12,500 KG", "Gross Weight: 12,500 KG")
+        is True
+    )
+
+    # Incoterm: standalone word check
+    assert value_supported_by_quote("incoterm", "FOB", "Incoterm: FOB Shanghai") is True
+    assert value_supported_by_quote("incoterm", "CIF", "Incoterm: FOB Shanghai") is False
+
+    # Ground_field rejects value when quote doesn't support it even if quote is in document
+    doc = "HS Code: 8479.05.00"
+    field = ground_field("hs_code", "8479.50", 0.96, "HS Code: 8479.05.00", doc)
+    assert field.is_grounded is False
+    assert field.value is None
+    assert field.confidence == 0.0
 
 
 def test_ground_and_calibrate_document():

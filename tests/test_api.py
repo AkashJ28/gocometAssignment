@@ -69,13 +69,21 @@ def test_client(tmp_path, monkeypatch):
 
 
 def test_health_check(test_client):
-    """Test GET /api/health endpoint returns 200 and healthy status."""
+    """Test GET /api/health endpoint returns 200, healthy status, and llm_configured flag."""
     response = test_client.get("/api/health")
     assert response.status_code == 200
     data = response.json()
     assert data["status"] == "healthy"
     assert data["database"] == "ready"
     assert data["version"] == "1.0.0"
+    assert "llm_configured" in data
+    assert isinstance(data["llm_configured"], bool)
+
+
+def test_resume_document_endpoint_not_found(test_client):
+    """Test POST /api/documents/{document_id}/resume returns 404 for missing document."""
+    response = test_client.post("/api/documents/non-existent-doc-uuid/resume")
+    assert response.status_code == 404
 
 
 def test_upload_document_endpoint(test_client, monkeypatch):

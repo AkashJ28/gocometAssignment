@@ -162,18 +162,36 @@ def test_consignee_alias_match(default_rules):
 
 
 def test_consignee_fuzzy_matching(default_rules):
-    """Fuzzy matching above 0.85 threshold passes, 0.65-0.85 is uncertain, <0.65 is mismatch."""
-    # High similarity (e.g. minor typo / omission like 'Meridian Robotics Incorporated' vs 'Meridian Robotics Incorp')
+    """Fuzzy spelling near-misses go to UNCERTAIN by default, or MATCH if opted in; different legal forms MISMATCH."""
+    # 1. Spelling near-miss defaults to UNCERTAIN for human review (Zero Silent Approvals A6)
     field_high = ExtractedField(
         value="Meridian Robotics Incorprated",
         confidence=0.92,
         source_quote="Meridian Robotics Incorprated",
         is_grounded=True,
     )
-    val_high = validate_consignee(field_high, default_rules.consignee, min_confidence=0.85)
-    assert val_high.status == ValidationStatus.MATCH
+    val_default = validate_consignee(field_high, default_rules.consignee, min_confidence=0.85)
+    assert val_default.status == ValidationStatus.UNCERTAIN
+    assert "spelling variation detected" in val_default.reason.lower()
 
-    # Ambiguous similarity (0.65 <= ratio < 0.85)
+    # Opted-in fuzzy auto-approval passes
+    rule_opt_in = default_rules.consignee.model_copy()
+    rule_opt_in.allow_fuzzy_auto_approve = True
+    val_opt_in = validate_consignee(field_high, rule_opt_in, min_confidence=0.85)
+    assert val_opt_in.status == ValidationStatus.MATCH
+
+    # 2. Conflicting legal form (Ltd vs Inc) must be MISMATCH (Zero Silent Approvals A6)
+    field_ltd = ExtractedField(
+        value="Meridian Robotics Ltd",
+        confidence=0.95,
+        source_quote="Meridian Robotics Ltd",
+        is_grounded=True,
+    )
+    val_ltd = validate_consignee(field_ltd, default_rules.consignee, min_confidence=0.85)
+    assert val_ltd.status == ValidationStatus.MISMATCH
+    assert "conflicting legal entity form" in val_ltd.reason.lower()
+
+    # 3. Ambiguous similarity (0.65 <= ratio < 0.85)
     field_ambig = ExtractedField(
         value="Meridian Robot Systems Inc",
         confidence=0.90,
@@ -184,7 +202,7 @@ def test_consignee_fuzzy_matching(default_rules):
     assert val_ambig.status == ValidationStatus.UNCERTAIN
     assert "ambiguous" in val_ambig.reason.lower()
 
-    # Low similarity (< 0.65) -> Mismatch
+    # 4. Low similarity (< 0.65) -> Mismatch
     field_mismatch = ExtractedField(
         value="Apex Industrial Automation Ltd.",
         confidence=0.95,
@@ -207,6 +225,30 @@ def test_hs_code_match(default_rules):
     )
     val = validate_hs_code(field, default_rules.allowed_hs_codes, min_confidence=0.85)
     assert val.status == ValidationStatus.MATCH
+
+
+def test_hs_code_precision_and_prefix(default_rules):
+    """HS code prefix < 6 digits must be UNCERTAIN; 4-digit heading cannot auto-approve (Zero Silent Approvals A4)."""
+    # 4-digit heading covers hundreds of products -> UNCERTAIN
+    field_4digit = ExtractedField(
+        value="8479",
+        confidence=0.95,
+        source_quote="HS Code: 8479",
+        is_grounded=True,
+    )
+    val_4digit = validate_hs_code(field_4digit, default_rules.allowed_hs_codes, min_confidence=0.85)
+    assert val_4digit.status == ValidationStatus.UNCERTAIN
+    assert "fewer than 6 digits" in val_4digit.reason
+
+    # 5-digit incomplete subheading -> UNCERTAIN
+    field_5digit = ExtractedField(
+        value="8479.5",
+        confidence=0.95,
+        source_quote="HS Code: 8479.5",
+        is_grounded=True,
+    )
+    val_5digit = validate_hs_code(field_5digit, default_rules.allowed_hs_codes, min_confidence=0.85)
+    assert val_5digit.status == ValidationStatus.UNCERTAIN
 
 
 def test_hs_code_mismatch(default_rules):
@@ -272,6 +314,24 @@ def test_port_validation(default_rules):
         is_grounded=True,
     )
     assert validate_port(f_mismatch, default_rules.ports.pod, "pod", 0.85).status == ValidationStatus.MISMATCH
+
+    # Substring "SHA" without UN/LOCODE is UNCERTAIN, not MATCH (Zero Silent Approvals A5)
+    f_sha = ExtractedField(
+        value="SHA",
+        confidence=0.90,
+        source_quote="Port: SHA",
+        is_grounded=True,
+    )
+    assert validate_port(f_sha, default_rules.ports.pol, "pol", 0.85).status == ValidationStatus.UNCERTAIN
+
+    # Port in foreign country (Oakland, New Zealand vs US) is MISMATCH (Zero Silent Approvals A5)
+    f_nz = ExtractedField(
+        value="Port of Oakland, New Zealand",
+        confidence=0.90,
+        source_quote="Port of Oakland, New Zealand",
+        is_grounded=True,
+    )
+    assert validate_port(f_nz, default_rules.ports.pod, "pod", 0.85).status == ValidationStatus.MISMATCH
 
 
 def test_gross_weight_validation(default_rules):

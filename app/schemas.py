@@ -37,6 +37,8 @@ class ExtractedDoc(BaseModel):
     gross_weight: ExtractedField
     invoice_number: ExtractedField
     extraction_method: Literal["text_layer", "vision_default", "vision_fallback"]
+    grounding_source: Literal["text_layer", "ocr", "vision_unverified"] = "text_layer"
+    grounding_note: Optional[str] = None
     raw_text: Optional[str] = None
 
 
@@ -91,6 +93,7 @@ class DecisionResult(BaseModel):
     decision: DecisionType
     reasoning: str
     draft_amendment_email: Optional[str] = None
+    text_source: Literal["llm", "template"] = "llm"
 
 
 class RunTrace(BaseModel):
@@ -106,7 +109,7 @@ class RunTrace(BaseModel):
     completion_tokens: int = 0
     thinking_tokens: int = 0
     cost_usd: float = 0.0
-    status: Literal["SUCCESS", "FAILED", "RUNNING"]
+    status: Literal["SUCCESS", "FAILED", "RUNNING", "DEGRADED"]
     error_message: Optional[str] = None
 
 
@@ -119,6 +122,7 @@ class ConsigneeRule(BaseModel):
     aliases: List[str] = Field(default_factory=list)
     address_keywords: List[str] = Field(default_factory=list)
     min_fuzzy_threshold: float = Field(default=0.85, ge=0.0, le=1.0)
+    allow_fuzzy_auto_approve: bool = Field(default=False)
 
 
 class HSCodeRule(BaseModel):

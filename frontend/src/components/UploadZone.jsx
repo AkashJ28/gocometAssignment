@@ -9,53 +9,58 @@ const DOC_TYPES = [
 
 const SAMPLE_TEMPLATES = [
   {
-    name: 'Sample Clean Invoice (FOB)',
+    name: 'Clean Invoice (Auto Approve)',
     type: 'commercial_invoice',
     content: `COMMERCIAL INVOICE
-Invoice No: INV-2026-8891
-Date: 2026-03-15
-Exporter: ACME Industrial Exports Ltd, Shanghai, China
-Consignee: Global Freight Logistics Inc, 452 Harbor Way, Long Beach, CA 90802
-Port of Loading: Shanghai Port, China (CNSHA)
-Port of Discharge: Port of Los Angeles, USA (USLAX)
-Incoterm: FOB (Free On Board)
-Description of Goods: Lithium Iron Phosphate Battery Cells Grade-A 3.2V 280Ah
-Gross Weight: 14,250.00 KGS
-HS Code: 8507.60.0000
-Total Amount: $142,500.00 USD`,
-    filename: 'sample_clean_invoice.txt',
+INTERNATIONAL TRADE CARGO DOCUMENTATION - SYSTEM OF RECORD
+Invoice No: INV-2026-9001
+Invoice Date: March 15, 2026
+Exporter: Tokyo Precision Robotics Corp, Minato-ku, Tokyo, Japan
+Buyer / Consignee Name: Meridian Robotics Inc.
+Harmonized Tariff (HS Code): 8479.50.00
+Port of Loading (POL): Port of Tokyo (JPTYO)
+Port of Discharge (POD): Port of Los Angeles (USLAX)
+Delivery Terms (Incoterm): FOB
+Gross Cargo Weight: 12,500.00 KG
+Description of Merchandise: Industrial Robotic Arms model MR-400 with Servo Controllers
+Authorized Officer Signature & Corporate Seal: [DIGITALLY VERIFIED]`,
+    filename: 'clean_invoice_preset.txt',
   },
   {
-    name: 'Sample Discrepant POD Invoice',
+    name: 'Discrepant POD (Amendment Request)',
     type: 'commercial_invoice',
     content: `COMMERCIAL INVOICE
-Invoice No: INV-DISC-9902
-Date: 2026-03-18
-Exporter: Shenzhen Precision Electronics Ltd
-Consignee: Global Freight Logistics Inc
-Port of Loading: Shanghai Port, China (CNSHA)
-Port of Discharge: Rotterdam Port, Netherlands (NLRTM)
-Incoterm: CIF (Cost, Insurance and Freight)
-Description of Goods: Precision Servo Motors 400W Industrial Automation
-Gross Weight: 8,400.00 KGS
-HS Code: 8501.52.0000
-Total Amount: $98,400.00 USD`,
-    filename: 'sample_discrepant_pod.txt',
+INTERNATIONAL TRADE CARGO DOCUMENTATION - SYSTEM OF RECORD
+Invoice No: INV-DISC-9002
+Invoice Date: March 18, 2026
+Exporter: Tokyo Precision Robotics Corp, Tokyo, Japan
+Buyer / Consignee Name: Meridian Robotics Inc.
+Harmonized Tariff (HS Code): 8479.50.00
+Port of Loading (POL): Port of Tokyo (JPTYO)
+Port of Discharge (POD): Port of Rotterdam (NLRTM)
+Delivery Terms (Incoterm): FOB
+Gross Cargo Weight: 14,200.00 KG
+Description of Merchandise: Industrial Robotic Arms model MR-400
+Authorized Officer Signature: [VERIFIED]`,
+    filename: 'discrepant_pod_preset.txt',
   },
   {
-    name: 'Sample Uncertain Weight Doc',
-    type: 'bill_of_lading',
-    content: `OCEAN BILL OF LADING
-B/L Number: BL-2026-7712
-Shipper: Nippon Heavy Machinery Corp, Yokohama, Japan
-Consignee: Global Freight Logistics Inc
-Port of Loading: Port of Yokohama, Japan
-Port of Discharge: Port of Los Angeles, USA (USLAX)
-Terms: CIF
-Cargo: CNC Milling Machine Spare Parts
-Weight: Approx net wt 3200 kgs (Gross weight pending re-weigh tare verification)
-HS Code: 8466.93.0000`,
-    filename: 'sample_uncertain_weight.txt',
+    name: 'Overweight Cargo (Discrepancy)',
+    type: 'commercial_invoice',
+    content: `COMMERCIAL INVOICE
+INTERNATIONAL TRADE CARGO DOCUMENTATION - SYSTEM OF RECORD
+Invoice No: INV-OVER-9003
+Invoice Date: March 20, 2026
+Exporter: Tokyo Precision Robotics Corp, Tokyo, Japan
+Buyer / Consignee Name: Meridian Robotics Inc.
+Harmonized Tariff (HS Code): 8479.89.00
+Port of Loading (POL): Port of Shanghai (CNSHA)
+Port of Discharge (POD): Port of Los Angeles (USLAX)
+Delivery Terms (Incoterm): CIF
+Gross Cargo Weight: 62,500.00 KG
+Description of Merchandise: Multi-Axis Robotic Gantry Heavy Industrial Unit
+Authorized Officer Signature: [VERIFIED]`,
+    filename: 'overweight_cargo_preset.txt',
   },
 ];
 

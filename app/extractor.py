@@ -11,18 +11,19 @@ from google import genai
 from google.genai import types
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.config import (
+    DEFAULT_EXTRACTOR_MODEL,
+    DEFAULT_FALLBACK_MODEL,
+    get_model_pricing,
+    LLM_TIMEOUT_SECONDS,
+)
 from app.grounding import ground_and_calibrate_document
 from app.parser import ParsedDocument, parse_document
 from app.schemas import ExtractedDoc, ExtractedField, RunTrace
 
-DEFAULT_MODEL = "gemini-3.8-flash"
-PROMPT_COST_PER_MILLION = 0.15
-COMPLETION_COST_PER_MILLION = 0.60
-
 
 class RawFieldExtraction(BaseModel):
     """Candidate field extraction from model before grounding verification."""
-    model_config = ConfigDict(extra="forbid")
 
     value: Optional[str] = None
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
@@ -31,7 +32,6 @@ class RawFieldExtraction(BaseModel):
 
 class DocumentExtractionPayload(BaseModel):
     """Structured extraction payload enforced on Gemini response."""
-    model_config = ConfigDict(extra="forbid")
 
     consignee: RawFieldExtraction
     hs_code: RawFieldExtraction
@@ -76,16 +76,21 @@ class ExtractorAgent:
         self,
         client: Optional[Any] = None,
         model_name: Optional[str] = None,
+        fallback_model: Optional[str] = None,
         mock_mode: bool = False,
     ):
-        self.model_name = model_name or os.environ.get("EXTRACTOR_MODEL", DEFAULT_MODEL)
+        self.model_name = model_name or os.environ.get("EXTRACTOR_MODEL", DEFAULT_EXTRACTOR_MODEL)
+        self.fallback_model = fallback_model or os.environ.get("FALLBACK_MODEL", DEFAULT_FALLBACK_MODEL)
         self.mock_mode = mock_mode
         self.client = client
 
         if not self.mock_mode and self.client is None:
             api_key = os.environ.get("GEMINI_API_KEY")
             if api_key:
-                self.client = genai.Client(api_key=api_key)
+                self.client = genai.Client(
+                    api_key=api_key,
+                    http_options={"timeout": int(LLM_TIMEOUT_SECONDS * 1000)},
+                )
 
     def extract_document(
         self,
@@ -113,6 +118,8 @@ class ExtractorAgent:
 
         parsed_doc: ParsedDocument = parse_document(file_bytes, filename, mime_type=mime_type)
 
+        actual_model = self.model_name
+
         try:
             if self.mock_mode:
                 # Mock response handling for offline testing
@@ -122,7 +129,7 @@ class ExtractorAgent:
                 thinking_tokens = 60
             else:
                 if self.client is None:
-                    raise RuntimeError("Gemini client is not initialized and mock_mode is False.")
+                    raise RuntimeError("GEMINI_API_KEY is not set. Please configure GEMINI_API_KEY in environment or .env.")
 
                 # Construct prompt contents
                 config = types.GenerateContentConfig(
@@ -145,11 +152,31 @@ class ExtractorAgent:
                             types.Part.from_bytes(data=img_bytes, mime_type="image/png")
                         )
 
-                response = self.client.models.generate_content(
-                    model=self.model_name,
-                    contents=contents,
-                    config=config,
-                )
+                candidate_models = [actual_model]
+                fallback = self.fallback_model
+                if fallback and fallback not in candidate_models:
+                    candidate_models.append(fallback)
+                for backup in ["gemini-3.5-flash-lite", "gemini-flash-lite-latest", "gemini-3.6-flash"]:
+                    if backup not in candidate_models:
+                        candidate_models.append(backup)
+
+                last_error = None
+                response = None
+                for candidate in candidate_models:
+                    try:
+                        actual_model = candidate
+                        response = self.client.models.generate_content(
+                            model=actual_model,
+                            contents=contents,
+                            config=config,
+                        )
+                        break
+                    except Exception as attempt_err:
+                        last_error = attempt_err
+                        continue
+
+                if response is None:
+                    raise last_error
 
                 # Parse JSON output into DocumentExtractionPayload
                 raw_response_text = response.text or "{}"
@@ -158,15 +185,89 @@ class ExtractorAgent:
 
                 # Extract token usage metadata
                 usage = getattr(response, "usage_metadata", None)
-                prompt_tokens = getattr(usage, "prompt_token_count", 0) if usage else 0
-                completion_tokens = getattr(usage, "candidates_token_count", 0) if usage else 0
-                thinking_tokens = getattr(usage, "thoughts_token_count", 0) if usage else 0
+                prompt_tokens = (getattr(usage, "prompt_token_count", 0) or 0) if usage else 0
+                completion_tokens = (getattr(usage, "candidates_token_count", 0) or 0) if usage else 0
+                thinking_tokens = (getattr(usage, "thoughts_token_count", 0) or 0) if usage else 0
 
-            # Calculate cost
+            # Calculate cost using centralized pricing table
+            p_price, c_price = get_model_pricing(actual_model)
             cost_usd = (
-                (prompt_tokens * PROMPT_COST_PER_MILLION)
-                + ((completion_tokens + thinking_tokens) * COMPLETION_COST_PER_MILLION)
+                (prompt_tokens * p_price)
+                + ((completion_tokens + thinking_tokens) * c_price)
             ) / 1_000_000.0
+
+            # Enforce deterministic code-level grounding and confidence calibration
+            raw_text = parsed_doc.raw_text or payload.transcription
+            extracted_doc = ground_and_calibrate_document(
+                payload=payload,
+                raw_text=raw_text,
+                extraction_method=parsed_doc.extraction_method,
+                grounding_source=parsed_doc.grounding_source,
+                grounding_note=(
+                    "Document scanned without verified text layer or OCR; routed to human review"
+                    if parsed_doc.grounding_source == "vision_unverified"
+                    else None
+                ),
+            )
+
+            # Quality fallback escalation (E4):
+            # Scans with fewer than 6 of 8 fields grounded escalate once to fallback model
+            grounded_count = sum(
+                1 for fname in [
+                    "consignee", "hs_code", "pol", "pod", "incoterm",
+                    "description", "gross_weight", "invoice_number"
+                ]
+                if getattr(extracted_doc, fname).is_grounded
+            )
+            if (
+                not self.mock_mode
+                and parsed_doc.extraction_method != "text_layer"
+                and grounded_count < 6
+                and actual_model != self.fallback_model
+                and self.client is not None
+            ):
+                try:
+                    fb_model = self.fallback_model
+                    fb_response = self.client.models.generate_content(
+                        model=fb_model,
+                        contents=contents,
+                        config=config,
+                    )
+                    fb_data = json.loads(fb_response.text or "{}")
+                    fb_payload = DocumentExtractionPayload.model_validate(fb_data)
+                    fb_usage = getattr(fb_response, "usage_metadata", None)
+                    fb_p_tok = (getattr(fb_usage, "prompt_token_count", 0) or 0) if fb_usage else 0
+                    fb_c_tok = (getattr(fb_usage, "candidates_token_count", 0) or 0) if fb_usage else 0
+                    fb_t_tok = (getattr(fb_usage, "thoughts_token_count", 0) or 0) if fb_usage else 0
+
+                    prompt_tokens += fb_p_tok
+                    completion_tokens += fb_c_tok
+                    thinking_tokens += fb_t_tok
+
+                    fb_p_price, fb_c_price = get_model_pricing(fb_model)
+                    cost_usd += (
+                        (fb_p_tok * fb_p_price)
+                        + ((fb_c_tok + fb_t_tok) * fb_c_price)
+                    ) / 1_000_000.0
+
+                    fb_doc = ground_and_calibrate_document(
+                        payload=fb_payload,
+                        raw_text=parsed_doc.raw_text or fb_payload.transcription,
+                        extraction_method=parsed_doc.extraction_method,
+                        grounding_source=parsed_doc.grounding_source,
+                    )
+                    fb_grounded_count = sum(
+                        1 for fname in [
+                            "consignee", "hs_code", "pol", "pod", "incoterm",
+                            "description", "gross_weight", "invoice_number"
+                        ]
+                        if getattr(fb_doc, fname).is_grounded
+                    )
+                    if fb_grounded_count > grounded_count:
+                        extracted_doc = fb_doc
+                        actual_model = f"{actual_model} -> {fb_model}"
+                except Exception:
+                    pass
 
             latency_ms = (time.perf_counter() - start_time) * 1000.0
 
@@ -175,21 +276,13 @@ class ExtractorAgent:
                 run_id=run_id,
                 document_id=doc_id,
                 node_name="extractor",
-                model_name=self.model_name,
+                model_name=actual_model,
                 latency_ms=round(latency_ms, 2),
                 prompt_tokens=prompt_tokens,
                 completion_tokens=completion_tokens,
                 thinking_tokens=thinking_tokens,
                 cost_usd=round(cost_usd, 6),
                 status="SUCCESS",
-            )
-
-            # Enforce deterministic code-level grounding and confidence calibration
-            raw_text = parsed_doc.raw_text or payload.transcription
-            extracted_doc = ground_and_calibrate_document(
-                payload=payload,
-                raw_text=raw_text,
-                extraction_method=parsed_doc.extraction_method,
             )
 
             return extracted_doc, trace

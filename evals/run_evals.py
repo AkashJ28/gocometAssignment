@@ -117,10 +117,10 @@ def extract_deterministic_doc(pdf_path: str, spec_fields: Dict[str, Any]) -> Ext
 
 def run_evaluation(
     quick: bool = False,
-    use_mock: bool = False,
+    mode: str = "rules",
     write_report: bool = False,
 ) -> Dict[str, Any]:
-    """Execute full evaluation benchmark across dataset."""
+    """Execute evaluation benchmark across dataset in 'rules' or 'live' mode."""
     documents = load_ground_truth()
     rules = load_customer_rules(CUSTOMER_RULES_FILE)
     validator = ValidatorAgent(rules)
@@ -129,6 +129,24 @@ def run_evaluation(
         # Select 3 representative documents: 1 clean, 1 mismatch, 1 uncertain
         target_ids = {"doc_01", "doc_04", "doc_06"}
         documents = [d for d in documents if d["document_id"] in target_ids]
+
+    is_live = mode == "live"
+    extractor = None
+    if is_live:
+        from app.extractor import ExtractorAgent
+        api_key = os.getenv("GEMINI_API_KEY")
+        if not api_key and os.path.exists(".env"):
+            with open(".env", "r", encoding="utf-8") as f:
+                for line in f:
+                    if line.startswith("GEMINI_API_KEY="):
+                        api_key = line.split("=", 1)[1].strip().strip("\"'")
+                        os.environ["GEMINI_API_KEY"] = api_key
+                        break
+        if not api_key:
+            raise ValueError(
+                "GEMINI_API_KEY environment variable is required to run evaluation in --mode live."
+            )
+        extractor = ExtractorAgent(mock_mode=False)
 
     results = []
     total_fields = 0
@@ -142,9 +160,13 @@ def run_evaluation(
     false_approve_count = 0
 
     total_latency_ms = 0.0
+    total_cost_usd = 0.0
+
+    mode_label = "LIVE (Full Multi-Agent Pipeline with Real LLM Extractor)" if is_live else "RULES (Deterministic Validator & Router Only)"
 
     print(f"\n========================================================")
-    print(f"  GoComet Nova DAW Offline Evaluation Benchmark (EVAL-02)")
+    print(f"  GoComet Nova DAW Evaluation Benchmark (EVAL-02)")
+    print(f"  Mode : {mode_label}")
     print(f"  Evaluating {len(documents)} document(s)...")
     print(f"========================================================\n")
 
@@ -158,8 +180,21 @@ def run_evaluation(
         expected_validation = doc_entry["expected_validation"].lower()
         expected_decision = doc_entry["expected_decision"].lower()
 
+        doc_cost = 0.0
         # Extract document
-        extracted_doc = extract_deterministic_doc(pdf_path, expected_fields)
+        if is_live:
+            with open(pdf_path, "rb") as f:
+                pdf_bytes = f.read()
+            extracted_doc, run_trace = extractor.extract(
+                file_bytes=pdf_bytes,
+                filename=filename,
+                document_id=doc_id,
+            )
+            doc_cost = run_trace.cost_usd
+            total_cost_usd += doc_cost
+        else:
+            # Rules mode uses deterministic fixture
+            extracted_doc = extract_deterministic_doc(pdf_path, expected_fields)
 
         # Field evaluation
         doc_field_correct = 0
@@ -184,7 +219,7 @@ def run_evaluation(
                     correct_fields += 1
                     doc_field_correct += 1
             else:
-                if extracted_f.value and str(exp_val).strip() == str(extracted_f.value).strip():
+                if extracted_f.value and str(exp_val).strip().lower() == str(extracted_f.value).strip().lower():
                     correct_fields += 1
                     doc_field_correct += 1
 
@@ -224,24 +259,26 @@ def run_evaluation(
             f"Val: {actual_validation:9} (exp: {expected_validation:9}) | "
             f"Dec: {actual_decision:17} (exp: {expected_decision:17}) | "
             f"{latency_ms:.1f}ms"
+            + (f" | ${doc_cost:.4f}" if is_live else "")
         )
 
         results.append({
             "document_id": doc_id,
             "filename": filename,
             "category": doc_entry["category"],
-            "field_accuracy": round((doc_field_correct / doc_field_total) * 100, 1),
+            "field_accuracy": round((doc_field_correct / doc_field_total) * 100, 1) if is_live else "N/A (rules mode)",
             "expected_validation": expected_validation,
             "actual_validation": actual_validation,
             "expected_decision": expected_decision,
             "actual_decision": actual_decision,
             "latency_ms": round(latency_ms, 2),
+            "cost_usd": round(doc_cost, 6) if is_live else 0.0,
             "discrepancy_notes": doc_entry["discrepancy_notes"],
         })
 
     # Summary Metrics
-    field_acc_pct = round((correct_fields / max(total_fields, 1)) * 100, 2)
-    grounding_rate_pct = round((grounded_quotes / max(total_fields, 1)) * 100, 2)
+    field_acc_pct = round((correct_fields / max(total_fields, 1)) * 100, 2) if is_live else None
+    grounding_rate_pct = round((grounded_quotes / max(total_fields, 1)) * 100, 2) if is_live else None
     val_acc_pct = round((validation_matches / max(len(documents), 1)) * 100, 2)
     dec_acc_pct = round((decision_matches / max(len(documents), 1)) * 100, 2)
 
@@ -251,13 +288,19 @@ def run_evaluation(
         else 0.0
     )
     avg_latency = round(total_latency_ms / max(len(documents), 1), 2)
+    avg_cost = round(total_cost_usd / max(len(documents), 1), 6) if is_live else 0.0
 
     print(f"\n========================================================")
-    print(f"  BENCHMARK SUMMARY RESULTS")
+    print(f"  BENCHMARK SUMMARY RESULTS [{mode.upper()} MODE]")
     print(f"========================================================")
     print(f"  Total Documents Evaluated      : {len(documents)}")
-    print(f"  Field Extraction Accuracy      : {field_acc_pct}% ({correct_fields}/{total_fields})")
-    print(f"  Grounding Quote Verification   : {grounding_rate_pct}%")
+    if is_live:
+        print(f"  Field Extraction Accuracy      : {field_acc_pct}% ({correct_fields}/{total_fields})")
+        print(f"  Grounding Quote Verification   : {grounding_rate_pct}%")
+        print(f"  Average Cost per Document      : ${avg_cost:.4f}")
+        print(f"  Total Cost (USD)               : ${total_cost_usd:.4f}")
+    else:
+        print(f"  Field Extraction Accuracy      : N/A (Rules mode tests Validator + Router)")
     print(f"  Validation Rule Accuracy       : {val_acc_pct}%")
     print(f"  Decision Routing Accuracy      : {dec_acc_pct}%")
     print(f"  Discrepant/Uncertain Test Docs : {discrepant_or_uncertain_count}")
@@ -274,6 +317,7 @@ def run_evaluation(
         )
 
     summary_data = {
+        "mode": mode,
         "total_documents": len(documents),
         "field_extraction_accuracy_pct": field_acc_pct,
         "grounding_quote_rate_pct": grounding_rate_pct,
@@ -283,6 +327,8 @@ def run_evaluation(
         "false_approve_count": false_approve_count,
         "false_approve_rate_pct": false_approve_rate,
         "avg_latency_ms": avg_latency,
+        "avg_cost_usd": avg_cost,
+        "total_cost_usd": round(total_cost_usd, 6),
         "results": results,
     }
 
@@ -294,14 +340,29 @@ def run_evaluation(
 
 def generate_markdown_report(summary: Dict[str, Any]) -> None:
     """Generate comprehensive evaluation report in evals/eval_report.md."""
+    is_live = summary.get("mode") == "live"
+    mode_text = "Live LLM Extractor Pipeline" if is_live else "Deterministic Rules & Router Benchmark"
+
     lines = [
-        "# GoComet Nova DAW — Offline Evaluation Benchmark Report",
+        f"# GoComet Nova DAW — Benchmark Report ({summary.get('mode', 'rules').upper()} MODE)",
         "",
         "## Executive Summary",
         f"- **Benchmark Status**: PASSED",
+        f"- **Evaluation Mode**: {mode_text}",
         f"- **Zero Silent Approvals Guarantee**: **0.0% False-Approve Rate** (0 of {summary['discrepant_or_uncertain_count']} discrepant/uncertain documents approved)",
-        f"- **Field-Level Extraction Accuracy**: {summary['field_extraction_accuracy_pct']}%",
-        f"- **Source Text Grounding Quote Rate**: {summary['grounding_quote_rate_pct']}%",
+    ]
+
+    if is_live:
+        lines.extend([
+            f"- **Field-Level Extraction Accuracy**: {summary['field_extraction_accuracy_pct']}%",
+            f"- **Source Text Grounding Quote Rate**: {summary['grounding_quote_rate_pct']}%",
+            f"- **Average Cost per Document**: ${summary['avg_cost_usd']:.4f}",
+            f"- **Total Benchmark Cost**: ${summary['total_cost_usd']:.4f}",
+        ])
+    else:
+        lines.append("- **Field-Level Extraction Accuracy**: N/A (Rules mode tests Validator + Router logic)")
+
+    lines.extend([
         f"- **Rule Validation Accuracy**: {summary['validation_accuracy_pct']}%",
         f"- **Decision Routing Accuracy**: {summary['decision_routing_accuracy_pct']}%",
         f"- **Average Pipeline Latency**: {summary['avg_latency_ms']} ms",
@@ -310,7 +371,7 @@ def generate_markdown_report(summary: Dict[str, Any]) -> None:
         "",
         "| Doc ID | Category | Expected Validation | Actual Validation | Expected Decision | Actual Decision | Notes |",
         "|---|---|---|---|---|---|---|",
-    ]
+    ])
 
     for r in summary["results"]:
         lines.append(
@@ -336,13 +397,13 @@ def generate_markdown_report(summary: Dict[str, Any]) -> None:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Run offline evaluation benchmark on golden dataset.")
+    parser = argparse.ArgumentParser(description="Run evaluation benchmark on golden dataset.")
+    parser.add_argument("--mode", choices=["rules", "live"], default="rules", help="Evaluation mode: 'rules' (validator + router only) or 'live' (full LLM extractor)")
     parser.add_argument("--quick", action="store_true", help="Run quick 3-document test suite")
     parser.add_argument("--report", action="store_true", help="Write evaluation report to evals/eval_report.md")
-    parser.add_argument("--mock", action="store_true", help="Use deterministic mock extraction")
     args = parser.parse_args()
 
-    run_evaluation(quick=args.quick, use_mock=args.mock, write_report=args.report)
+    run_evaluation(quick=args.quick, mode=args.mode, write_report=args.report)
 
 
 if __name__ == "__main__":

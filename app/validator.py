@@ -2,7 +2,7 @@
 
 import difflib
 import re
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Union
 
 from app.schemas import (
     ConsigneeRule,
@@ -62,10 +62,41 @@ def check_field_grounding_and_confidence(
     return None
 
 
+LEGAL_FORMS = {
+    "inc": "inc",
+    "incorporated": "inc",
+    "corp": "corp",
+    "corporation": "corp",
+    "ltd": "ltd",
+    "limited": "ltd",
+    "llc": "llc",
+    "gmbh": "gmbh",
+    "pvt ltd": "ltd",
+    "private limited": "ltd",
+    "sa": "sa",
+    "bv": "bv",
+    "plc": "plc",
+    "co": "corp",
+    "company": "corp",
+}
+
+
+def extract_legal_form(name: str) -> Optional[str]:
+    """Extract canonical legal form suffix from an organization name."""
+    norm = _normalize_text(name)
+    for phrase in ["private limited", "pvt ltd"]:
+        if norm.endswith(phrase):
+            return "ltd"
+    tokens = norm.split()
+    if not tokens:
+        return None
+    return LEGAL_FORMS.get(tokens[-1])
+
+
 def validate_consignee(
     field: ExtractedField, rule: ConsigneeRule, min_confidence: float
 ) -> FieldValidation:
-    """Validate consignee against primary name and aliases with exact and fuzzy matching."""
+    """Validate consignee against primary name and aliases with exact, legal form, and fuzzy matching."""
     invariant_check = check_field_grounding_and_confidence(
         field, min_confidence, field_name="consignee"
     )
@@ -86,6 +117,24 @@ def validate_consignee(
             reason="Exact match with customer primary name or approved alias",
         )
 
+    # Check for conflicting legal form (e.g. Ltd vs Inc)
+    found_legal = extract_legal_form(field.value)  # type: ignore[arg-type]
+    primary_legal = extract_legal_form(rule.primary_name)
+    alias_legals = {extract_legal_form(a) for a in rule.aliases if extract_legal_form(a)}
+    allowed_legals = ({primary_legal} if primary_legal else set()) | alias_legals
+
+    if found_legal and allowed_legals and found_legal not in allowed_legals:
+        return FieldValidation(
+            field_name="consignee",
+            status=ValidationStatus.MISMATCH,
+            expected=rule.primary_name,
+            found=field.value,
+            reason=(
+                f"Conflicting legal entity form: '{found_legal.upper()}' is not an approved entity form "
+                f"(expected {', '.join(sorted(l.upper() for l in allowed_legals))})"
+            ),
+        )
+
     # Fuzzy matching using SequenceMatcher
     targets = [norm_primary] + norm_aliases
     ratios = [
@@ -95,13 +144,22 @@ def validate_consignee(
     max_ratio = max(ratios) if ratios else 0.0
 
     if max_ratio >= rule.min_fuzzy_threshold:
-        return FieldValidation(
-            field_name="consignee",
-            status=ValidationStatus.MATCH,
-            expected=rule.primary_name,
-            found=field.value,
-            reason=f"Fuzzy match similarity {max_ratio:.2f} >= threshold {rule.min_fuzzy_threshold:.2f}",
-        )
+        if getattr(rule, "allow_fuzzy_auto_approve", False):
+            return FieldValidation(
+                field_name="consignee",
+                status=ValidationStatus.MATCH,
+                expected=rule.primary_name,
+                found=field.value,
+                reason=f"Fuzzy match similarity {max_ratio:.2f} >= threshold {rule.min_fuzzy_threshold:.2f}",
+            )
+        else:
+            return FieldValidation(
+                field_name="consignee",
+                status=ValidationStatus.UNCERTAIN,
+                expected=rule.primary_name,
+                found=field.value,
+                reason=f"Consignee spelling variation detected (similarity {max_ratio:.2f}); operator review required",
+            )
     elif max_ratio >= 0.65:
         return FieldValidation(
             field_name="consignee",
@@ -121,9 +179,12 @@ def validate_consignee(
 
 
 def validate_hs_code(
-    field: ExtractedField, allowed_rules: List[HSCodeRule], min_confidence: float
+    field: ExtractedField, allowed_rules: Union[HSCodeRule, List[HSCodeRule]], min_confidence: float
 ) -> FieldValidation:
     """Validate HS code by comparing normalized digits against customer approved classifications."""
+    if isinstance(allowed_rules, HSCodeRule):
+        allowed_rules = [allowed_rules]
+
     invariant_check = check_field_grounding_and_confidence(
         field, min_confidence, field_name="hs_code"
     )
@@ -131,16 +192,43 @@ def validate_hs_code(
         return invariant_check
 
     raw_found = field.value or ""
-    # Strip dots, spaces, hyphens
-    norm_found = re.sub(r"[\s.\-]", "", raw_found)
+    norm_found = re.sub(r"\D", "", raw_found)
 
     expected_codes_str = ", ".join(r.code for r in allowed_rules)
 
+    # Require at least 6 digits for subheading classification
+    if len(norm_found) < 6:
+        return FieldValidation(
+            field_name="hs_code",
+            status=ValidationStatus.UNCERTAIN,
+            expected=expected_codes_str,
+            found=field.value,
+            reason=f"HS code '{field.value}' has fewer than 6 digits; tariff subheading cannot be verified",
+        )
+
     for rule in allowed_rules:
-        norm_rule_code = re.sub(r"[\s.\-]", "", rule.code)
-        # Check prefix match (e.g., 6 digits) or full normalized match
-        match_len = min(len(norm_rule_code), len(norm_found))
-        if match_len >= 4 and norm_found[:match_len] == norm_rule_code[:match_len]:
+        norm_rule_code = re.sub(r"\D", "", rule.code)
+        # Subheading (first 6 digits) must match exactly
+        if len(norm_rule_code) >= 6:
+            if norm_found[:6] == norm_rule_code[:6]:
+                if len(norm_rule_code) > 6 and len(norm_found) >= len(norm_rule_code):
+                    if norm_found[: len(norm_rule_code)] == norm_rule_code:
+                        return FieldValidation(
+                            field_name="hs_code",
+                            status=ValidationStatus.MATCH,
+                            expected=expected_codes_str,
+                            found=field.value,
+                            reason=f"HS code {field.value} matches approved tariff classification ({rule.code})",
+                        )
+                else:
+                    return FieldValidation(
+                        field_name="hs_code",
+                        status=ValidationStatus.MATCH,
+                        expected=expected_codes_str,
+                        found=field.value,
+                        reason=f"HS code {field.value} matches approved tariff classification ({rule.code})",
+                    )
+        elif len(norm_rule_code) == len(norm_found) and norm_found == norm_rule_code:
             return FieldValidation(
                 field_name="hs_code",
                 status=ValidationStatus.MATCH,
@@ -192,7 +280,7 @@ def validate_incoterm(
 def validate_port(
     field: ExtractedField, port_rule: PortRule, port_type: str, min_confidence: float
 ) -> FieldValidation:
-    """Validate port of loading/discharge against allowed LOCODEs and names."""
+    """Validate port of loading/discharge against allowed LOCODEs and names with token and country precision."""
     invariant_check = check_field_grounding_and_confidence(
         field, min_confidence, field_name=port_type
     )
@@ -203,30 +291,57 @@ def validate_port(
     allowed_locodes = [loc.strip().upper() for loc in port_rule.allowed_locodes]
     allowed_names = [name.strip().upper() for name in port_rule.allowed_names]
 
-    matched = False
-    for loc in allowed_locodes:
-        if loc in val_upper:
-            matched = True
-            break
-
-    if not matched:
-        for name in allowed_names:
-            if name in val_upper or val_upper in name:
-                matched = True
-                break
-
     expected_summary = (
         f"Allowed LOCODEs: {', '.join(port_rule.allowed_locodes)} / Names: {', '.join(port_rule.allowed_names)}"
     )
 
-    if matched:
-        return FieldValidation(
-            field_name=port_type,
-            status=ValidationStatus.MATCH,
-            expected=expected_summary,
-            found=field.value,
-            reason=f"{port_type.upper()} '{field.value}' matches approved customer port",
-        )
+    # 1. Match allowed LOCODEs
+    for loc in allowed_locodes:
+        if re.search(r"\b" + loc + r"\b", val_upper):
+            return FieldValidation(
+                field_name=port_type,
+                status=ValidationStatus.MATCH,
+                expected=expected_summary,
+                found=field.value,
+                reason=f"{port_type.upper()} '{field.value}' matches approved UN/LOCODE ({loc})",
+            )
+
+    # 2. Check whole port name matches using word boundary
+    for name in allowed_names:
+        name_pattern = r"\b" + re.escape(name.upper()) + r"\b"
+        if re.search(name_pattern, val_upper):
+            foreign_indicators = [
+                "NEW ZEALAND", "AUSTRALIA", "GERMANY", "NETHERLANDS",
+                "UNITED KINGDOM", "FRANCE", "ROTTERDAM", "HAMBURG"
+            ]
+            if any(ind in val_upper for ind in foreign_indicators):
+                return FieldValidation(
+                    field_name=port_type,
+                    status=ValidationStatus.MISMATCH,
+                    expected=expected_summary,
+                    found=field.value,
+                    reason=f"{port_type.upper()} '{field.value}' specifies a foreign jurisdiction incompatible with approved ports",
+                )
+
+            return FieldValidation(
+                field_name=port_type,
+                status=ValidationStatus.MATCH,
+                expected=expected_summary,
+                found=field.value,
+                reason=f"{port_type.upper()} '{field.value}' matches approved port name '{name}'",
+            )
+
+    # 3. Check for partial name overlap (e.g. SHA for Shanghai without LOCODE)
+    for name in allowed_names:
+        val_tokens = re.findall(r"\w+", val_upper)
+        if any(tok in name.upper() and len(tok) >= 3 for tok in val_tokens):
+            return FieldValidation(
+                field_name=port_type,
+                status=ValidationStatus.UNCERTAIN,
+                expected=expected_summary,
+                found=field.value,
+                reason=f"{port_type.upper()} '{field.value}' has partial overlap with '{name}'; exact port name or LOCODE required",
+            )
 
     return FieldValidation(
         field_name=port_type,

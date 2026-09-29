@@ -51,9 +51,6 @@ tmp/
 temp/
 .cache/
 
-# Documentation & Internal Design Decisions
-docs/
-TECH_STACK_DECISIONS.md
 
 # AI Coding Assistants & Planning Frameworks
 GEMINI.md

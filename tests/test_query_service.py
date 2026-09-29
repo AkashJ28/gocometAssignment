@@ -35,7 +35,7 @@ def test_validate_sql_query_valid():
 
 
 def test_validate_sql_query_blocks_attacks():
-    """Test that SQL guard blocks injection, multi-statement queries, DDL, DML, and forbidden tables."""
+    """Test that SQL guard blocks injection, multi-statement queries, DDL, DML, and forbidden tables via sqlglot AST."""
     # 1. Multi-statement injection
     is_valid, err = validate_sql_query("SELECT * FROM documents; DROP TABLE documents;")
     assert is_valid is False
@@ -44,7 +44,7 @@ def test_validate_sql_query_blocks_attacks():
     # 2. DROP TABLE
     is_valid, err = validate_sql_query("DROP TABLE extractions")
     assert is_valid is False
-    assert "Only read-only SELECT queries" in err or "Forbidden keyword" in err
+    assert "Only read-only SELECT queries" in err or "Forbidden" in err
 
     # 3. DELETE FROM
     is_valid, err = validate_sql_query("DELETE FROM documents WHERE id = '123'")
@@ -63,10 +63,33 @@ def test_validate_sql_query_blocks_attacks():
     assert is_valid is False
     assert "Unauthorized table access" in err
 
-    # 7. System table access
-    is_valid, err = validate_sql_query("SELECT * FROM sqlite_master")
+    # 7. Quoted system table access ("pg_shadow") (Zero Silent Approvals D1)
+    is_valid, err = validate_sql_query('SELECT * FROM "pg_shadow"')
     assert is_valid is False
-    assert "Unauthorized table access" in err
+    assert "Unauthorized" in err
+
+    # 8. Dangerous function execution (pg_sleep, pg_read_file) (Zero Silent Approvals D1)
+    is_valid, err = validate_sql_query("SELECT 1 FROM documents WHERE pg_sleep(600) IS NOT NULL")
+    assert is_valid is False
+    assert "Forbidden function" in err
+
+    is_valid, err = validate_sql_query("SELECT pg_read_file('/etc/passwd') FROM documents")
+    assert is_valid is False
+    assert "Forbidden function" in err
+
+    # 9. Legitimate SQL function (replace) must be allowed (Zero Silent Approvals D1)
+    is_valid, sanitized = validate_sql_query("SELECT replace(consignee, 'Inc', '') FROM extractions")
+    assert is_valid is True
+    assert "replace" in sanitized.lower()
+
+
+def test_flagged_shipments_fallback_query():
+    """Verify fallback query for 'how many shipments were flagged this week?' counts flagged decisions (D3)."""
+    qs = QueryService(mock_mode=True)
+    res = qs.generate_sql("how many shipments were flagged this week?")
+    assert "human_review" in res.sql_query
+    assert "amendment_request" in res.sql_query
+    assert res.sql_source == "fallback"
 
 
 def test_query_service_answer_query_end_to_end():

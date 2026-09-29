@@ -80,6 +80,72 @@ def validate_domain_syntax(field_name: str, value: Optional[str]) -> bool:
     return True
 
 
+def value_supported_by_quote(
+    field_name: str,
+    value: Optional[str],
+    quote: Optional[str],
+) -> bool:
+    """Verify that the extracted value is actually supported by the source quote."""
+    if not value or not value.strip():
+        return False
+    if not quote or not quote.strip():
+        return False
+
+    val_str = value.strip()
+    quote_str = quote.strip()
+
+    if field_name == "hs_code":
+        val_digits = re.sub(r"\D", "", val_str)
+        quote_digits = re.sub(r"\D", "", quote_str)
+        if not val_digits or not quote_digits:
+            return False
+        return val_digits in quote_digits or (
+            len(val_digits) >= 6 and quote_digits.startswith(val_digits[:6])
+        )
+
+    if field_name == "gross_weight":
+        val_num_match = re.search(r"[\d]+(?:[.,]\d+)?", val_str.replace(",", ""))
+        if not val_num_match:
+            return False
+        val_num = val_num_match.group(0)
+        val_int = val_num.split(".")[0]
+        quote_clean = quote_str.replace(",", "")
+        return val_int in quote_clean
+
+    if field_name == "incoterm":
+        val_upper = val_str.upper()
+        pattern = r"\b" + re.escape(val_upper) + r"\b"
+        return bool(re.search(pattern, quote_str.upper()))
+
+    if field_name in ("pol", "pod"):
+        val_clean = val_str.upper()
+        if UN_LOCODE_REGEX.match(val_clean):
+            return val_clean in quote_str.upper()
+        val_tokens = re.findall(r"\w+", val_str.lower())
+        quote_lower = quote_str.lower()
+        if not val_tokens:
+            return False
+        return all(t in quote_lower for t in val_tokens if len(t) > 2)
+
+    if field_name == "invoice_number":
+        norm_val = re.sub(r"[^\w]", "", val_str).lower()
+        norm_quote = re.sub(r"[^\w]", "", quote_str).lower()
+        return norm_val in norm_quote
+
+    if field_name in ("consignee", "description"):
+        if normalize_text(val_str).lower() in normalize_text(quote_str).lower():
+            return True
+        val_tokens = re.findall(r"\w+", val_str.lower())
+        meaningful_tokens = [t for t in val_tokens if len(t) > 2]
+        if not meaningful_tokens:
+            return True
+        quote_lower = quote_str.lower()
+        matching_tokens = [t for t in meaningful_tokens if t in quote_lower]
+        return len(matching_tokens) / len(meaningful_tokens) >= 0.7
+
+    return normalize_text(val_str).lower() in normalize_text(quote_str).lower()
+
+
 def calibrate_confidence(
     field_name: str,
     raw_value: Optional[str],
@@ -89,7 +155,7 @@ def calibrate_confidence(
     """Calibrate confidence score using grounding and domain syntax checks.
     Ungrounded -> 0.0
     Grounded but invalid domain syntax -> min(raw * 0.5, 0.45) (guarantees human review)
-    Grounded with valid syntax -> min(round(0.75 * raw + 0.25, 2), 1.0)
+    Grounded with valid syntax -> min(round(raw_confidence, 2), 1.0) (strictly non-inflating)
     """
     if not is_grounded:
         return 0.0
@@ -98,7 +164,8 @@ def calibrate_confidence(
     if not is_valid_syntax:
         return min(round(raw_confidence * 0.5, 2), 0.45)
 
-    return min(round(0.75 * raw_confidence + 0.25, 2), 1.0)
+    # Strictly non-inflating: can lower or preserve confidence, never raise it.
+    return min(round(raw_confidence, 2), 1.0)
 
 
 def ground_field(
@@ -107,10 +174,15 @@ def ground_field(
     confidence: float,
     source_quote: Optional[str],
     raw_text: Optional[str],
+    grounding_source: str = "text_layer",
 ) -> ExtractedField:
     """Ground and calibrate a single trade field."""
-    is_grounded = verify_source_quote(source_quote, raw_text)
+    quote_in_doc = verify_source_quote(source_quote, raw_text)
+    value_in_quote = value_supported_by_quote(field_name, value, source_quote)
+    is_grounded = quote_in_doc and value_in_quote
     calibrated_conf = calibrate_confidence(field_name, value, confidence, is_grounded)
+    if grounding_source == "vision_unverified" and calibrated_conf > 0.60:
+        calibrated_conf = 0.60
     return ExtractedField(
         value=value if is_grounded else None,
         confidence=calibrated_conf,
@@ -123,6 +195,8 @@ def ground_and_calibrate_document(
     payload: Any,
     raw_text: Optional[str],
     extraction_method: Literal["text_layer", "vision_default", "vision_fallback"],
+    grounding_source: Literal["text_layer", "ocr", "vision_unverified"] = "text_layer",
+    grounding_note: Optional[str] = None,
 ) -> ExtractedDoc:
     """Transform candidate extraction payload into grounded and calibrated ExtractedDoc."""
     field_names = [
@@ -139,13 +213,17 @@ def ground_and_calibrate_document(
     field_kwargs = {}
     for name in field_names:
         raw_field = getattr(payload, name)
-        field_kwargs[name] = ground_field(
+        field = ground_field(
             field_name=name,
             value=raw_field.value,
             confidence=raw_field.confidence,
             source_quote=raw_field.source_quote,
             raw_text=raw_text,
         )
+        # For unverified vision scans without independent text/OCR, cap confidence at 0.60 (Zero Silent Approvals A2)
+        if grounding_source == "vision_unverified" and field.confidence > 0.60:
+            field.confidence = 0.60
+        field_kwargs[name] = field
 
     return ExtractedDoc(
         consignee=field_kwargs["consignee"],
@@ -157,5 +235,7 @@ def ground_and_calibrate_document(
         gross_weight=field_kwargs["gross_weight"],
         invoice_number=field_kwargs["invoice_number"],
         extraction_method=extraction_method,
+        grounding_source=grounding_source,
+        grounding_note=grounding_note,
         raw_text=raw_text,
     )

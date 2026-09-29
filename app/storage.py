@@ -65,6 +65,26 @@ class StorageService:
         finally:
             session.close()
 
+    def get_document(self, document_id: str) -> Optional[Document]:
+        """Fetch a single Document record by id."""
+        session = self._get_session()
+        try:
+            return session.query(Document).filter(Document.id == document_id).first()
+        finally:
+            session.close()
+
+    def list_incomplete_documents(self) -> List[Document]:
+        """List documents that are in an incomplete pipeline state."""
+        session = self._get_session()
+        try:
+            return (
+                session.query(Document)
+                .filter(Document.status.in_(["PENDING", "EXTRACTED", "VALIDATED"]))
+                .all()
+            )
+        finally:
+            session.close()
+
     def save_extraction(
         self,
         document_id: str,

@@ -6,6 +6,24 @@ from typing import List, Literal, Optional
 import pymupdf
 
 
+def ocr_images(images: List[bytes]) -> Optional[str]:
+    """Run OCR on image buffers using pytesseract if available."""
+    try:
+        import io
+        from PIL import Image
+        import pytesseract
+
+        extracted = []
+        for img_bytes in images:
+            img = Image.open(io.BytesIO(img_bytes))
+            text = pytesseract.image_to_string(img)
+            if text and text.strip():
+                extracted.append(text.strip())
+        return "\n\n".join(extracted) if extracted else None
+    except Exception:
+        return None
+
+
 @dataclass
 class ParsedDocument:
     """Represents the parsed content and mode of an ingested document."""
@@ -13,6 +31,8 @@ class ParsedDocument:
     extraction_method: Literal["text_layer", "vision_default", "vision_fallback"]
     file_path: Optional[str] = None
     raw_text: Optional[str] = None
+    ocr_text: Optional[str] = None
+    grounding_source: Literal["text_layer", "ocr", "vision_unverified"] = "text_layer"
     page_images: List[bytes] = field(default_factory=list)
     page_count: int = 0
 
@@ -58,6 +78,7 @@ def parse_document(
             file_path=file_path,
             mime_type=resolved_mime,
             extraction_method="text_layer",
+            grounding_source="text_layer",
             raw_text=file_bytes.decode("utf-8", errors="replace"),
             page_images=[],
             page_count=1,
@@ -65,16 +86,19 @@ def parse_document(
 
     # 2. Handle image formats directly
     if resolved_mime.startswith("image/"):
+        ocr_res = ocr_images([file_bytes])
         return ParsedDocument(
             file_path=file_path,
             mime_type=resolved_mime,
             extraction_method="vision_default",
-            raw_text=None,
+            grounding_source="ocr" if ocr_res else "vision_unverified",
+            ocr_text=ocr_res,
+            raw_text=ocr_res,
             page_images=[file_bytes],
             page_count=1,
         )
 
-    # 2. Handle PDF formats
+    # 3. Handle PDF formats
     if resolved_mime == "application/pdf":
         try:
             doc = pymupdf.open(stream=file_bytes, filetype="pdf")
@@ -88,6 +112,7 @@ def parse_document(
                 file_path=file_path,
                 mime_type=resolved_mime,
                 extraction_method="vision_fallback",
+                grounding_source="vision_unverified",
                 raw_text=None,
                 page_images=[],
                 page_count=0,
@@ -102,7 +127,7 @@ def parse_document(
             extracted_pages_text.append(page_text)
 
         joined_text = "\n\n".join(t.strip() for t in extracted_pages_text if t.strip())
-        
+
         # Analyze character density across processed pages
         printable_non_whitespace = [c for c in joined_text if not c.isspace() and c.isprintable()]
         total_chars = len(printable_non_whitespace)
@@ -119,11 +144,14 @@ def parse_document(
                 rendered_images.append(pix.tobytes("png"))
 
             doc.close()
+            ocr_res = ocr_images(rendered_images)
             return ParsedDocument(
                 file_path=file_path,
                 mime_type=resolved_mime,
                 extraction_method="vision_fallback",
-                raw_text=joined_text if joined_text else None,
+                grounding_source="ocr" if ocr_res else "vision_unverified",
+                ocr_text=ocr_res,
+                raw_text=ocr_res or (joined_text if joined_text else None),
                 page_images=rendered_images,
                 page_count=total_pages,
             )
@@ -134,6 +162,7 @@ def parse_document(
             file_path=file_path,
             mime_type=resolved_mime,
             extraction_method="text_layer",
+            grounding_source="text_layer",
             raw_text=joined_text,
             page_images=[],
             page_count=total_pages,

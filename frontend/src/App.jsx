@@ -22,7 +22,19 @@ import {
   MailQuestion,
   RefreshCw,
   FolderOpen,
+  XCircle,
+  Hash,
+  Database,
+  Layers,
+  ArrowUpRight,
 } from 'lucide-react';
+
+function formatBytes(bytes) {
+  if (!bytes) return '0 B';
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
+}
 
 export default function App() {
   const [healthStatus, setHealthStatus] = useState('checking');
@@ -112,14 +124,26 @@ export default function App() {
 
   const getDocStatusBadge = (status) => {
     const s = (status || '').toLowerCase();
+    if (s.includes('fail') || s.includes('error')) {
+      return { bg: 'bg-rose-500/10 text-rose-400 border-rose-500/20', icon: XCircle, label: 'FAILED' };
+    }
     if (s.includes('approve')) {
-      return { bg: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20', icon: CheckCircle2 };
+      return { bg: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20', icon: CheckCircle2, label: 'APPROVED' };
     }
     if (s.includes('amendment')) {
-      return { bg: 'bg-purple-500/10 text-purple-400 border-purple-500/20', icon: MailQuestion };
+      return { bg: 'bg-purple-500/10 text-purple-400 border-purple-500/20', icon: MailQuestion, label: 'AMENDMENT' };
     }
-    return { bg: 'bg-amber-500/10 text-amber-400 border-amber-500/20', icon: AlertTriangle };
+    if (s.includes('complete') || s.includes('success')) {
+      return { bg: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20', icon: CheckCircle2, label: 'COMPLETED' };
+    }
+    if (s.includes('pending')) {
+      return { bg: 'bg-sky-500/10 text-sky-400 border-sky-500/20', icon: Clock, label: 'PENDING' };
+    }
+    return { bg: 'bg-amber-500/10 text-amber-400 border-amber-500/20', icon: AlertTriangle, label: status || 'PROCESSED' };
   };
+
+  const activeDoc = activeBundle?.document;
+  const activeStatusBadge = activeDoc ? getDocStatusBadge(activeDoc.status) : null;
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans selection:bg-sky-500 selection:text-white">
@@ -175,7 +199,7 @@ export default function App() {
                       onClick={() => !isProcessing && loadDocumentDetails(doc.id)}
                       className={`p-3 rounded-lg border text-left cursor-pointer transition-all ${
                         isSelected
-                          ? 'bg-slate-900 border-sky-500 shadow-sm shadow-sky-500/20'
+                          ? 'bg-slate-900 border-sky-500 shadow-sm shadow-sky-500/20 ring-1 ring-sky-500/30'
                           : 'bg-slate-900/40 border-slate-700/60 hover:bg-slate-700/40'
                       }`}
                     >
@@ -187,17 +211,19 @@ export default function App() {
                           </span>
                         </div>
                         <span
-                          className={`text-[10px] px-1.5 py-0.5 rounded border flex items-center gap-1 flex-shrink-0 font-sans ${statusBadge.bg}`}
+                          className={`text-[10px] px-1.5 py-0.5 rounded border flex items-center gap-1 flex-shrink-0 font-sans font-medium ${statusBadge.bg}`}
                         >
                           <StatusIcon className="w-2.5 h-2.5" />
-                          {doc.status || 'PROCESSED'}
+                          {statusBadge.label}
                         </span>
                       </div>
 
                       <div className="mt-2 flex items-center justify-between text-[11px] text-slate-400 font-mono">
-                        <span className="truncate max-w-[120px]">{doc.doc_type}</span>
-                        <span>
-                          {doc.uploaded_at ? doc.uploaded_at.slice(11, 19) : ''}
+                        <span className="truncate max-w-[130px] uppercase text-[10px] text-slate-400">
+                          {doc.doc_type ? doc.doc_type.replace('_', ' ') : 'document'}
+                        </span>
+                        <span className="text-[10px]">
+                          {doc.uploaded_at ? doc.uploaded_at.replace('T', ' ').slice(0, 16) : ''}
                         </span>
                       </div>
                     </div>
@@ -214,8 +240,8 @@ export default function App() {
           {errorMessage && (
             <div className="p-4 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-300 text-xs flex items-start gap-2 shadow-lg">
               <AlertTriangle className="w-4 h-4 text-rose-400 flex-shrink-0 mt-0.5" />
-              <div className="flex-1">
-                <strong>Error:</strong> {errorMessage}
+              <div className="flex-1 leading-relaxed">
+                <strong>Pipeline Notice:</strong> {errorMessage}
               </div>
               <button
                 onClick={() => setErrorMessage(null)}
@@ -223,6 +249,41 @@ export default function App() {
               >
                 &times;
               </button>
+            </div>
+          )}
+
+          {/* Active Document Overview Ribbon */}
+          {activeDoc && (
+            <div className="bg-slate-800/80 rounded-xl border border-slate-700/80 p-4 shadow-lg flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div className="flex items-center gap-3">
+                <div className="p-2.5 rounded-lg bg-sky-500/10 border border-sky-500/20 text-sky-400">
+                  <FileText className="w-6 h-6" />
+                </div>
+                <div>
+                  <div className="flex items-center gap-2">
+                    <h2 className="text-sm font-bold text-white tracking-tight">{activeDoc.filename}</h2>
+                    {activeStatusBadge && (
+                      <span className={`text-[10px] px-2 py-0.5 rounded border font-sans font-medium flex items-center gap-1 ${activeStatusBadge.bg}`}>
+                        <activeStatusBadge.icon className="w-3 h-3" />
+                        {activeStatusBadge.label}
+                      </span>
+                    )}
+                  </div>
+                  <div className="mt-1 flex flex-wrap items-center gap-3 text-xs text-slate-400 font-mono">
+                    <span>ID: <code className="text-sky-300">{activeDoc.id.slice(0, 8)}...</code></span>
+                    <span>&bull;</span>
+                    <span>Size: <strong className="text-slate-200">{formatBytes(activeDoc.file_size_bytes)}</strong></span>
+                    <span>&bull;</span>
+                    <span>Format: <strong className="text-slate-200">{activeDoc.mime_type}</strong></span>
+                    {activeDoc.uploaded_at && (
+                      <>
+                        <span>&bull;</span>
+                        <span>Uploaded: {activeDoc.uploaded_at.replace('T', ' ').slice(0, 19)}</span>
+                      </>
+                    )}
+                  </div>
+                </div>
+              </div>
             </div>
           )}
 

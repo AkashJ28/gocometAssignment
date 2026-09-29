@@ -38,20 +38,52 @@ class PipelineState(TypedDict, total=False):
     error: Optional[str]
 
 
+import logging
+from psycopg.rows import dict_row
+from psycopg_pool import ConnectionPool
+
+logger = logging.getLogger(__name__)
+
+_checkpointer_instance: Optional[BaseCheckpointSaver] = None
+
+
 def get_checkpointer(db_url: Optional[str] = None) -> BaseCheckpointSaver:
-    """Instantiate a durable checkpointer (PostgresSaver if DB is available, otherwise MemorySaver)."""
+    """Instantiate a durable checkpointer (PostgresSaver with ConnectionPool if DB is available, otherwise MemorySaver)."""
+    global _checkpointer_instance
+    if _checkpointer_instance is not None:
+        return _checkpointer_instance
+
     target_url = db_url or os.getenv("DATABASE_URL", DATABASE_URL)
+    require_durable = os.getenv("NOVA_REQUIRE_DURABLE_STATE", "0").lower() in ("1", "true")
+
     if target_url and (target_url.startswith("postgresql") or target_url.startswith("postgres")):
+        clean_url = target_url.replace("postgresql+psycopg://", "postgresql://").replace("postgresql+psycopg2://", "postgresql://")
         try:
             from langgraph.checkpoint.postgres import PostgresSaver
-            # Use sync context or connection pool
-            saver = PostgresSaver.from_conn_string(target_url)
+
+            pool = ConnectionPool(
+                conninfo=clean_url,
+                max_size=10,
+                kwargs={"autocommit": True, "prepare_threshold": 0, "row_factory": dict_row},
+                open=True,
+            )
+            saver = PostgresSaver(pool)
             saver.setup()
-            return saver
-        except Exception:
-            # Fall back to MemorySaver if PostgreSQL is unreachable (e.g. offline testing)
-            return MemorySaver()
-    return MemorySaver()
+            _checkpointer_instance = saver
+            return _checkpointer_instance
+        except Exception as e:
+            msg = f"Failed to initialize PostgresSaver checkpointer with {clean_url}: {e}"
+            if require_durable:
+                raise RuntimeError(msg) from e
+            logger.warning(f"{msg}. Falling back to MemorySaver.")
+            _checkpointer_instance = MemorySaver()
+            return _checkpointer_instance
+
+    if require_durable:
+        raise RuntimeError("NOVA_REQUIRE_DURABLE_STATE=1 requested but no PostgreSQL database configured.")
+
+    _checkpointer_instance = MemorySaver()
+    return _checkpointer_instance
 
 
 def create_pipeline_graph(
@@ -308,7 +340,7 @@ def run_pipeline(
     router_agent: Optional[RouterAgent] = None,
 ) -> PipelineState:
     """Execute the full agentic verification pipeline for a document."""
-    saver = checkpointer or _default_checkpointer
+    saver = checkpointer or get_checkpointer()
     graph = create_pipeline_graph(
         checkpointer=saver,
         storage_service=storage_service,
@@ -345,7 +377,7 @@ def resume_pipeline(
     router_agent: Optional[RouterAgent] = None,
 ) -> PipelineState:
     """Resume an existing pipeline run from its last saved checkpoint without re-running completed nodes."""
-    saver = checkpointer or _default_checkpointer
+    saver = checkpointer or get_checkpointer()
     graph = create_pipeline_graph(
         checkpointer=saver,
         storage_service=storage_service,

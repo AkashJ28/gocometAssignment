@@ -13,14 +13,25 @@ from google.genai import types
 
 from app.database import SessionLocal
 
-DEFAULT_QUERY_MODEL = "gemini-2.5-flash-lite"
+import sqlglot
+from sqlglot import exp
+
+DEFAULT_QUERY_MODEL = "gemini-3.5-flash-lite"
 
 ALLOWED_TABLES = {"documents", "extractions", "validations", "decisions", "runs"}
 
-FORBIDDEN_KEYWORDS = {
-    "insert", "update", "delete", "drop", "alter", "truncate",
-    "create", "replace", "exec", "execute", "grant", "revoke",
-    "attach", "detach", "into", "pragma", "reindex", "vacuum",
+FORBIDDEN_FUNCTIONS = {
+    "pg_sleep",
+    "pg_read_file",
+    "pg_write_file",
+    "pg_read_binary_file",
+    "pg_ls_dir",
+    "pg_stat_file",
+    "query_to_xml",
+    "dblink",
+    "lo_import",
+    "lo_export",
+    "system",
 }
 
 SCHEMA_PROMPT = """You are Nova's expert trade logistics SQL assistant.
@@ -112,58 +123,88 @@ class QueryResult(BaseModel):
     row_count: int
     grounded_answer: str
     execution_time_ms: float
+    sql_source: str = "llm"
 
 
 class SQLGenerationResponse(BaseModel):
     """Structured response schema enforced on Gemini SQL generator."""
-    model_config = ConfigDict(extra="forbid")
+
     sql_query: str
     explanation: str
+    sql_source: str = "llm"
 
 
 def validate_sql_query(sql: str) -> Tuple[bool, Optional[str]]:
-    """Strict read-only security guard verifying that SQL query is safe to execute (STOR-03).
+    """Strict read-only AST security guard verifying that SQL query is safe to execute via sqlglot (STOR-03).
     
     Returns (True, sanitized_sql) or (False, error_reason).
     """
     if not sql or not sql.strip():
         return False, "Query is empty"
 
-    cleaned = sql.strip()
-    # Strip any trailing semicolons
-    cleaned = re.sub(r";+\s*$", "", cleaned).strip()
+    cleaned = sql.strip().rstrip(";")
 
     # Reject internal semicolons (prevent multi-statement execution/SQL injection)
     if ";" in cleaned:
         return False, "Multi-statement queries separated by semicolons are strictly prohibited"
 
-    # Must start with SELECT or WITH ... SELECT
-    if not re.match(r"^\s*(SELECT|WITH\b.*?\bSELECT)\b", cleaned, re.IGNORECASE | re.DOTALL):
-        return False, "Only read-only SELECT queries are allowed"
+    try:
+        expression = sqlglot.parse_one(cleaned, read="postgres")
+    except Exception as parse_err:
+        return False, f"SQL syntax error: {str(parse_err)}"
 
-    # Search for forbidden DDL / DML keywords
-    forbidden_pattern = r"\b(" + "|".join(FORBIDDEN_KEYWORDS) + r")\b"
-    match = re.search(forbidden_pattern, cleaned, re.IGNORECASE)
-    if match:
-        return False, f"Forbidden keyword detected in query: '{match.group(1).upper()}'"
+    # 1. Enforce read-only SELECT query root statement
+    if not isinstance(expression, exp.Select):
+        return False, f"Only read-only SELECT queries are allowed; found {expression.key.upper()}"
 
-    # Verify tables accessed are strictly within whitelist (including CTE aliases defined in query)
-    cte_aliases = {
-        m.lower()
-        for m in re.findall(r"(?:WITH|,)\s*([a-zA-Z0-9_]+)\s+AS\b", cleaned, re.IGNORECASE)
-    }
-    allowed = ALLOWED_TABLES | cte_aliases
+    # 2. Extract CTE aliases defined in query
+    cte_aliases = {cte.alias_or_name.lower() for cte in expression.ctes}
+    allowed_table_identifiers = ALLOWED_TABLES | cte_aliases
 
-    table_matches = re.findall(r"\b(?:FROM|JOIN)\s+([a-zA-Z0-9_]+)", cleaned, re.IGNORECASE)
-    for tbl in table_matches:
-        if tbl.lower() not in allowed:
-            return False, f"Unauthorized table access: '{tbl}'. Allowed tables: {', '.join(sorted(ALLOWED_TABLES))}"
+    # 3. Verify all tables accessed belong to allowed tables (no system tables or schemas)
+    for table_expr in expression.find_all(exp.Table):
+        table_name = table_expr.name.lower() if table_expr.name else ""
+        schema_name = table_expr.db.lower() if table_expr.db else ""
 
-    # Auto-append LIMIT 100 if query lacks a LIMIT clause
-    if not re.search(r"\bLIMIT\s+\d+", cleaned, re.IGNORECASE):
-        cleaned = f"{cleaned} LIMIT 100"
+        if schema_name in ("pg_catalog", "information_schema", "pg_toast"):
+            return False, f"Access to system catalog '{schema_name}.{table_name}' is strictly prohibited"
 
-    return True, cleaned
+        if table_name in ("pg_shadow", "pg_authid", "pg_user", "pg_database", "pg_tables"):
+            return False, f"Unauthorized system table access: '{table_name}'"
+
+        if table_name and table_name not in allowed_table_identifiers:
+            return (
+                False,
+                f"Unauthorized table access: '{table_name}'. Allowed tables: {', '.join(sorted(ALLOWED_TABLES))}"
+            )
+
+    # 4. Check for forbidden function calls (e.g. pg_sleep, pg_read_file)
+    for func in expression.find_all(exp.Func):
+        func_name = func.sql_name().lower() if hasattr(func, "sql_name") else func.key.lower()
+        if func_name in FORBIDDEN_FUNCTIONS:
+            return False, f"Forbidden function detected in query: '{func_name}'"
+
+    for anon in expression.find_all(exp.Anonymous):
+        anon_name = anon.name.lower() if anon.name else ""
+        if anon_name in FORBIDDEN_FUNCTIONS:
+            return False, f"Forbidden function detected in query: '{anon_name}'"
+
+    # 5. Check for disallowed DDL/DML statements
+    forbidden_ast_nodes = (
+        exp.Insert, exp.Update, exp.Delete, exp.Create, exp.Drop,
+        exp.Alter, exp.Command, exp.Transaction,
+    )
+    for node_type in forbidden_ast_nodes:
+        if expression.find(node_type):
+            return False, f"Forbidden statement type detected: {node_type.__name__}"
+
+    # 6. Enforce LIMIT 100
+    limit_expr = expression.args.get("limit")
+    if not limit_expr:
+        expression = expression.limit(100)
+
+    sanitized_sql = expression.sql(dialect="postgres")
+    return True, sanitized_sql
 
 
 class QueryService:
@@ -205,7 +246,9 @@ class QueryService:
                 config=config,
             )
             data = json.loads(response.text)
-            return SQLGenerationResponse.model_validate(data)
+            resp = SQLGenerationResponse.model_validate(data)
+            resp.sql_source = "llm"
+            return resp
         except Exception:
             # Fall back to deterministic generation
             return self._mock_generate_sql(user_query)
@@ -213,39 +256,52 @@ class QueryService:
     def _mock_generate_sql(self, user_query: str) -> SQLGenerationResponse:
         """Deterministic heuristic SQL generator for offline testing and fallback."""
         q = user_query.lower()
+        if "flagged" in q or "flag" in q or ("shipment" in q and "week" in q):
+            return SQLGenerationResponse(
+                sql_query="SELECT count(*) as flagged_count FROM decisions WHERE decision IN ('human_review', 'amendment_request') AND created_at >= NOW() - INTERVAL '7 days'",
+                explanation="Counts shipments flagged for human review or amendment request in the last 7 days.",
+                sql_source="fallback",
+            )
         if "fob" in q:
             return SQLGenerationResponse(
                 sql_query="SELECT count(*) as count FROM extractions WHERE upper(incoterm) = 'FOB'",
                 explanation="Counts shipments with Incoterm FOB.",
+                sql_source="fallback",
             )
         if "consignee" in q and ("mismatch" in q or "discrepancy" in q):
             return SQLGenerationResponse(
                 sql_query="SELECT d.filename, e.consignee, v.overall_status FROM documents d JOIN extractions e ON d.id = e.document_id JOIN validations v ON d.id = v.document_id WHERE v.overall_status = 'mismatch'",
                 explanation="Selects documents and consignees with validation mismatches.",
+                sql_source="fallback",
             )
         if "auto_approve" in q or "approved" in q:
             return SQLGenerationResponse(
                 sql_query="SELECT count(*) as count FROM decisions WHERE decision = 'auto_approve'",
                 explanation="Counts auto-approved decisions.",
+                sql_source="fallback",
             )
         if "human_review" in q or "review" in q:
             return SQLGenerationResponse(
                 sql_query="SELECT d.filename, dec.reasoning FROM documents d JOIN decisions dec ON d.id = dec.document_id WHERE dec.decision = 'human_review'",
                 explanation="Selects documents routed for human review.",
+                sql_source="fallback",
             )
         if "weight" in q or "gross_weight" in q:
             return SQLGenerationResponse(
                 sql_query="SELECT filename, gross_weight FROM documents d JOIN extractions e ON d.id = e.document_id",
                 explanation="Lists filenames and gross weights.",
+                sql_source="fallback",
             )
         if "run" in q or "latency" in q or "cost" in q:
             return SQLGenerationResponse(
                 sql_query="SELECT node_name, count(*) as runs, round(avg(latency_ms), 2) as avg_latency_ms, round(sum(cost_usd), 4) as total_cost FROM runs GROUP BY node_name",
                 explanation="Aggregates telemetry metrics across nodes.",
+                sql_source="fallback",
             )
         return SQLGenerationResponse(
             sql_query="SELECT count(*) as count FROM documents",
             explanation="Counts total ingested documents.",
+            sql_source="fallback",
         )
 
     def execute_query(
@@ -263,6 +319,13 @@ class QueryService:
         sess = session or self.session_factory()
         close_sess = session is None
         try:
+            # Set read-only transaction and statement timeout for safety on Postgres
+            bind = getattr(sess, "bind", None)
+            dialect = getattr(bind.dialect, "name", "") if bind and hasattr(bind, "dialect") else ""
+            if "postgres" in dialect:
+                sess.execute(text("SET TRANSACTION READ ONLY"))
+                sess.execute(text("SET LOCAL statement_timeout = '5000ms'"))
+
             result = sess.execute(text(sanitized_sql))
             columns = list(result.keys())
             raw_rows = result.fetchall()
@@ -319,6 +382,7 @@ class QueryService:
 
         gen_resp = self.generate_sql(user_query)
         sql_query = gen_resp.sql_query
+        sql_source = gen_resp.sql_source
 
         columns, rows = self.execute_query(sql_query, session=session)
         grounded_answer = self.synthesize_answer(user_query, sql_query, columns, rows)
@@ -333,4 +397,5 @@ class QueryService:
             row_count=len(rows),
             grounded_answer=grounded_answer,
             execution_time_ms=round(latency_ms, 2),
+            sql_source=sql_source,
         )
