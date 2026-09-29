@@ -191,12 +191,29 @@ Based on production evaluations and official Gemini API token pricing:
 | **Storage & Checkpointing** | PostgreSQL Write Transactions | 0 | 0 | 0 | **$0.000000** |
 | **TOTAL (Clean Pass)** | Full Pipeline | **1,170** | **290** | **165** | **$0.000316** |
 
-#### Cost across 1,000 Documents:
+### 4.2 Cost Breakdown across 1,000 Documents
 - **Baseline clean documents**: **$0.32 USD** per 1,000 documents (~$0.00032/doc).
 - **Documents requiring amendment drafting**: **$0.48 USD** per 1,000 documents.
 - **Messy/scanned documents requiring Pro fallback (5% rate)**: **$0.85 USD** per 1,000 documents.
 
-### 4.2 Latency Percentiles (End-to-End Execution)
+### 4.3 Where Does Cost Blow Up & How Do We Control It?
+
+#### Where Cost Blows Up:
+1. **Unconstrained Thinking Tokens**: Reasoning models encountering OCR noise or formatting ambiguity can enter recursive chain-of-thought loops, generating 2,000–6,000 thinking tokens per field ($0.015+ per document).
+2. **High-Resolution Multimodal OCR on Every Document**: Rasterizing multi-page PDFs at 300 DPI and sending full image tiles to multimodal LLMs incurs high visual token billing, even when clean embedded text is already present.
+3. **Monolithic Prompt Context Stuffing**: Injecting complete customer compliance rules, port master lists, and historical discrepancy examples into every extraction prompt multiplies prompt token count by 5–10×.
+4. **Unbounded Retry Storms**: Network timeouts or JSON schema validation failures without exponential backoff or retry caps cause cascading API calls on problematic documents.
+
+#### How Nova Controls It:
+1. **Zero-Token Rule Engine**: The Validator Agent runs pure Python ($0.00 / 0 tokens). Rules are never fed into an LLM prompt.
+2. **Digital Text-Layer Priority**: Documents with clean digital text streams (detected via PyMuPDF) bypass vision token encoding, reducing token volume by ~75%.
+3. **Structured Output Constraints**: Strict Pydantic response schemas prevent verbose preamble/postamble output tokens.
+4. **Hard Fallback & Timeout Limits**: Maximum of 2 extraction attempts before falling back to `human_review`. Router LLM times out at 60s and degrades to a deterministic Jinja template.
+5. **Model Tiering**: Extraction uses fast, cost-efficient Gemini 3.8 Flash ($0.15 / $0.60 per 1M), while routing and SQL generation use ultra-light Flash-Lite ($0.075 / $0.30 per 1M).
+
+---
+
+### 4.4 Latency Percentiles (End-to-End Execution)
 
 Benchmarked on local workstation running Docker Compose:
 
@@ -207,17 +224,44 @@ Benchmarked on local workstation running Docker Compose:
 | **End-to-End Live Gemini LLM** | 1,180 ms | 1,640 ms | 1,950 ms | 2,420 ms |
 | **Text-to-SQL Query Endpoint** | 420 ms | 680 ms | 820 ms | 980 ms |
 
+### 4.5 Where is the Slowest Hop & How Would You Fix It?
+
+#### The Slowest Hop:
+The slowest hop is the **Multimodal Extractor Agent** (~1,200 ms to 2,200 ms), which accounts for **>85% of total pipeline latency**. This delay is driven by:
+- Image rasterization and base64 transmission over HTTP.
+- Time-to-First-Token (TTFT) for cloud vision model inference.
+- Processing multi-modal image tokens across high-resolution page segments.
+
+In comparison, the code-level Grounding Engine runs in **<2 ms**, the deterministic Validator runs in **<4 ms**, and the Router Agent runs in **~350 ms**.
+
+#### How to Fix It:
+1. **Dual-Path Selective OCR**: Inspect the PDF byte stream using PyMuPDF before calling any vision model. If the document has extractable text with character density > 200 chars and standard fonts, route directly through native text extraction. This drops extraction latency from **~1,500 ms to 72 ms** (a 20× speedup).
+2. **Speculative Parallel Execution**: As soon as high-priority fields (e.g. Consignee, HS Code) are extracted via streaming JSON, immediately trigger the Validator for those fields in parallel rather than waiting for the entire document payload to complete.
+3. **Lightweight Local OCR / Small Specialized Model**: In production, deploy a dedicated document model (e.g., Donut, LayoutLMv3, or a fine-tuned 2B vision model) on an edge GPU worker. This brings multimodal extraction down to **<250 ms** on-premise without external cloud API round-trips.
+4. **Semantic Document Caching**: Compute a perceptual hash (`pHash`) or SHA-256 of incoming document templates. For repeat suppliers submitting identical layouts, cache bounding boxes and layout schemas to extract fields in sub-50ms via direct coordinate slicing.
+
 ---
 
-## 5. Retrospective & Architectural Evolution for Part 2
+## 5. What I Would Do Differently With a Week Instead of a Day
 
-### 5.1 What Worked Exceptionally Well
-1. **The Code Grounding Invariant**: Forcing LLMs to return exact source quotes, verified against raw text via code before validation, eliminated 100% of digit hallucinations and phantom Incoterms.
-2. **Zero-LLM Deterministic Validation**: Relying strictly on Python rules for compliance verification prevented the model from ever "negotiating" or "forgiving" subtle compliance errors.
-3. **AST Guarded Text-to-SQL**: Using `sqlglot` to parse and validate SQL AST ensured that natural language queries could never execute `DROP`, `UPDATE`, `INSERT`, or multi-statement attacks against the database.
+If given a full week instead of a single day, I would evolve this POC across five specific dimensions:
 
-### 5.2 Architectural Evolution for Part 2 (Gated Future Scope)
-While strictly adhering to Part 1 boundaries for this release, our architectural design was built to seamlessly support Part 2 features in the future:
-- **3-Document Cross-Validation**: Extending LangGraph state from single-document `ExtractedDoc` to a multi-document bundle (`bol`, `commercial_invoice`, `packing_list`) with a dedicated cross-referencing validator node.
-- **Asynchronous Human-in-the-Loop Approval**: Leveraging LangGraph's native `interrupt()` capability to pause pipeline execution at `HUMAN_REVIEW` until an operator approves or amends via UI before dispatching downstream supplier emails.
-- **Automated Inbound Ingestion**: Wiring an IMAP / Webhook adapter directly into the existing `/api/documents/upload` endpoint without modifying any agent code.
+### 5.1 On-Premise Specialized Vision Pipeline (Zero Cloud Egress)
+- Replace generic cloud LLM vision calls with a fine-tuned, specialized document parsing model (e.g. LayoutLMv3 / PaliGemma 2B) running in an on-premise container.
+- **Why**: Eliminates cloud latency, guarantees data privacy for sensitive trade contracts, and reduces per-document inference cost to near-zero hardware depreciation.
+
+### 5.2 Dynamic Customer Rule Builder UI & Self-Service Rule Engine
+- Build an interactive rule configuration studio where FDEs and CG team leads can define customer-specific tolerances, port LOCODE whitelists, and consignee alias mappings with immediate visual feedback.
+- Include a "Dry Run" testbed where operators can test newly drafted rules against the last 50 historical documents before promoting them to production.
+
+### 5.3 Active Learning & Human Feedback Calibration Flywheel
+- Implement an automated feedback capture loop when CG operators override the agent's decision (`human_review` -> approved or `auto_approve` -> rejected).
+- Automatically log the diff to an active learning queue to recalibrate Levenshtein thresholds and re-evaluate the offline golden eval set on every code release.
+
+### 5.4 High-Throughput Asynchronous Task Queue (Celery / ARQ + Redis)
+- Decouple the FastAPI ingestion endpoint from LangGraph execution using an asynchronous message broker (Redis + ARQ or Celery).
+- Allows handling bursts of 5,000+ documents during peak shipping hours without worker thread starvation or HTTP gateway timeouts, with WebSocket progress updates to the UI.
+
+### 5.5 Distributed Tracing & Observability Integration (OpenTelemetry + Langfuse)
+- Instrument every node with OpenTelemetry spans and export traces directly to Langfuse.
+- Provides deep flame graphs showing exact token consumption per field, prompt versions, and user session correlation IDs across distributed multi-region deployments.
