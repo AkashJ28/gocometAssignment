@@ -30,7 +30,6 @@ yarn-error.log*
 
 # Runtime Storage & Uploads
 uploads/
-evals/dataset/
 *.db
 *.sqlite
 *.sqlite3
@@ -50,6 +49,7 @@ scratch/
 tmp/
 temp/
 .cache/
+references/
 
 
 # AI Coding Assistants & Planning Frameworks

@@ -12,6 +12,14 @@
 
 ---
 
+## Deliverables
+
+1. **Product Requirements Document (PRD)**: [`docs/PRD.pdf`](docs/PRD.pdf)
+2. **Technical Documentation**: [`docs/TECHNICAL_WRITEUP.pdf`](docs/TECHNICAL_WRITEUP.pdf)
+3. **Demo Video**: [Watch Demo Video on Google Drive](https://drive.google.com/file/d/1kFfZoyfpYhH3cKFm09_h308jn-mdgbdv/view?usp=sharing)
+
+---
+
 ## Key Features (Part 1 Deliverables)
 
 1. **Multimodal Extractor Agent**:
@@ -161,10 +169,10 @@ python evals/run_evals.py --quick
 
 | Deliverable | Description | File Link |
 |---|---|---|
-| **Deliverable 1: PRD** | Comprehensive Product Requirements Document (Nova context, FDE model, System of Outcomes, CG/SU personas, 5 JTBDs, 3-agent boundary defense, trust & evals, metrics, roadmap). | Markdown: [`docs/PRD.md`](docs/PRD.md)<br/>PDF: [`docs/PRD.pdf`](docs/PRD.pdf) |
+| **Deliverable 1: PRD** | Comprehensive Product Requirements Document (Nova context, FDE model, System of Outcomes, CG/SU personas, 5 JTBDs, 3-agent boundary defense, trust & evals, metrics, roadmap). | [`docs/PRD.pdf`](docs/PRD.pdf) |
 | **Deliverable 2: Working Multi-Agent POC** | Full end-to-end runnable multi-agent pipeline with Extractor, Validator, Router, PostgreSQL storage, Text-to-SQL query engine, and React UI. | Application Codebase (`app/`, `frontend/`) |
-| **Deliverable 3: Technical Write-up** | Architectural system diagram, top 3 real failure modes encountered in testing, production observability strategy (`runs` telemetry), cost & latency breakdowns, and retrospective. | Markdown: [`docs/TECHNICAL_WRITEUP.md`](docs/TECHNICAL_WRITEUP.md)<br/>PDF: [`docs/TECHNICAL_WRITEUP.pdf`](docs/TECHNICAL_WRITEUP.pdf) |
-| **Architecture Decisions** | Engineering decisions and trade-offs. | [`docs/TECH_STACK_DECISIONS.md`](docs/TECH_STACK_DECISIONS.md) |
+| **Deliverable 3: Technical Write-up** | Architectural system diagram, top 3 real failure modes encountered in testing, production observability strategy (`runs` telemetry), cost & latency breakdowns, and retrospective. | [`docs/TECHNICAL_WRITEUP.pdf`](docs/TECHNICAL_WRITEUP.pdf) |
+| **Demo Video** | End-to-end video walkthrough demonstrating the pipeline execution, operator UI, and deterministic validation. | [Watch on Google Drive](https://drive.google.com/file/d/1kFfZoyfpYhH3cKFm09_h308jn-mdgbdv/view?usp=sharing) |
 
 ---
 
@@ -302,16 +310,17 @@ curl -X GET "http://localhost:8000/api/runs"
 
 | Assignment Requirement | PDF Section | Status | Verification & Evidence |
 |---|---|---|---|
-| **Deliverable 1: PRD (3–5 pages)** | Part 1, Deliv. 1 | ✅ **Complete** | [`docs/PRD.md`](docs/PRD.md) covering Nova context, FDE model, System of Outcomes, CG/SU personas, 5 JTBDs, 3-agent defense, trust & evals, metrics, and roadmap. |
+| **Deliverable 1: PRD (3–5 pages)** | Part 1, Deliv. 1 | ✅ **Complete** | [`docs/PRD.pdf`](docs/PRD.pdf) covering Nova context, FDE model, System of Outcomes, CG/SU personas, 5 JTBDs, 3-agent defense, trust & evals, metrics, and roadmap. |
 | **A. Extractor Agent** | Part 1, Deliv. 2-A | ✅ **Complete** | [`app/extractor.py`](app/extractor.py) extracts all 8 required trade fields with per-field confidence scores and verbatim source quotes. |
 | **B. Validator Agent** | Part 1, Deliv. 2-B | ✅ **Complete** | [`app/validator.py`](app/validator.py) evaluates rules deterministically (`match`, `mismatch`, `uncertain`) with found vs expected deltas; never silently approves. |
 | **C. Router / Decision Agent** | Part 1, Deliv. 2-C | ✅ **Complete** | [`app/router.py`](app/router.py) routes into `auto_approve`, `human_review`, or `amendment_request` with structured reasoning and editable email drafts. |
 | **D. Storage + Query Layer** | Part 1, Deliv. 2-D | ✅ **Complete** | [`app/storage.py`](app/storage.py) and [`app/query_service.py`](app/query_service.py) provide PostgreSQL persistence + read-only AST-guarded Text-to-SQL engine. |
 | **E. Minimal UI** | Part 1, Deliv. 2-E | ✅ **Complete** | [`frontend/`](frontend/) React + Tailwind single-screen app displaying live pipeline stepper, confidence badges, validation breakdown, and agent reasoning. |
-| **Deliverable 3: Technical Write-up (1–2 pages)** | Part 1, Deliv. 3 | ✅ **Complete** | [`docs/TECHNICAL_WRITEUP.md`](docs/TECHNICAL_WRITEUP.md) with system architecture diagram, top 3 real failure modes, observability, cost & latency breakdown, and retrospective. |
+| **Deliverable 3: Technical Write-up (1–2 pages)** | Part 1, Deliv. 3 | ✅ **Complete** | [`docs/TECHNICAL_WRITEUP.pdf`](docs/TECHNICAL_WRITEUP.pdf) with system architecture diagram, top 3 real failure modes, observability, cost & latency breakdown, and retrospective. |
 | **Runnable on Laptop via Docker** | Part 1 Submission | ✅ **Complete** | `docker-compose up --build` boots database, backend, and frontend cleanly in a single command. |
 | **Tested Sample Documents (Clean & Messy)** | Part 1 Submission | ✅ **Complete** | Provided in [`samples/`](samples/) and [`evals/dataset/`](evals/dataset/) (12 golden documents). |
 | **Sample Queries Against Output** | Part 1 Submission | ✅ **Complete** | Documented above and verified via [`tests/test_query_service.py`](tests/test_query_service.py). |
+| **Demo Video** | Part 1 Submission | ✅ **Complete** | [Watch Demo Video on Google Drive](https://drive.google.com/file/d/1kFfZoyfpYhH3cKFm09_h308jn-mdgbdv/view?usp=sharing) |
 
 ---
 
@@ -342,10 +351,9 @@ gocometAssignment/
 ├── samples/                    # Tested sample documents (clean, messy, failure cases)
 ├── config/                     # Configuration
 │   └── customer_rules.yaml     # Baseline customer compliance rules
-├── docs/                       # Technical Documentation
-│   ├── PRD.md                  # Comprehensive Product Requirements Document (Deliverable 1)
-│   ├── TECHNICAL_WRITEUP.md    # Architecture & Retrospective Write-up (Deliverable 3)
-│   └── TECH_STACK_DECISIONS.md # Engineering architecture rationale
+├── docs/                       # Technical Documentation (Part 1 Deliverables)
+│   ├── PRD.pdf                 # Comprehensive Product Requirements Document (Deliverable 1)
+│   └── TECHNICAL_WRITEUP.pdf   # Architecture & Retrospective Write-up (Deliverable 3)
 ├── tests/                      # Automated Test Suite (80 tests across 13 modules)
 ├── docker-compose.yml          # Single-command Docker orchestration
 ├── Dockerfile.backend          # Backend container image
